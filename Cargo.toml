@@ -1,0 +1,32 @@
+# Host workspace. The two firmware crates are excluded: each needs its own
+# `.cargo/config.toml` (a different default target, a different linker) and,
+# in the ESP32's case, a different compiler. They pull `proto` in by path.
+[workspace]
+resolver = "2"
+members = ["proto", "host/plant-trace", "host/plant-model"]
+exclude = ["firmware/nrf-daq", "firmware/esp32-sig"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Lucas Alves de Lima"]
+
+[workspace.dependencies]
+# The host wants the `std` half (Display impls, Vec-backed helpers); the two
+# firmware crates depend on it directly with `default-features = false`.
+plant-trace-proto = { path = "proto" }
+plant-model = { path = "host/plant-model" }
+
+# Wire format — shared by the host and both firmwares, so it must stay no_std.
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1.1", default-features = false }
+crc = "3.4"
+
+# Host only.
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+csv = "1.4"
+serialport = "4.10"
+serde_json = "1"
+toml = "0.9"
