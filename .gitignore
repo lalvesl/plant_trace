@@ -1,0 +1,9 @@
+/target
+**/target
+/data
+/.esp-env.sh
+/result
+/result-*
+*.csv.gz
+.direnv
+/sim_results
