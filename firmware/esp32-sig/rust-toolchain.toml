@@ -1,0 +1,5 @@
+# The Xtensa LX6 target is only supported by the esp-rs fork of rustc, which
+# `espup install --targets esp32` installs under the `esp` toolchain name.
+# `nix develop .#esp32` sources the export file that puts it on PATH.
+[toolchain]
+channel = "esp"
