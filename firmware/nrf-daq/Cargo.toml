@@ -1,0 +1,61 @@
+[package]
+name = "nrf-daq"
+description = "nRF52840 rig firmware: two PWM outputs and a 3-channel SAADC, over native USB"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Lucas Alves de Lima"]
+
+# Standalone workspace: this crate builds for thumbv7em-none-eabihf with its
+# own linker configuration and cannot be a member of the host workspace.
+[workspace]
+
+[dependencies]
+plant-trace-proto = { path = "../../proto", default-features = false }
+
+embassy-executor = { version = "0.10", features = [
+  "platform-cortex-m",
+  "executor-thread",
+  "defmt",
+] }
+embassy-nrf = { version = "0.11", features = [
+  "defmt",
+  "nrf52840",
+  "time-driver-rtc1",
+  "gpiote",
+  "time",
+] }
+embassy-time = { version = "0.5", features = [
+  "defmt",
+  "defmt-timestamp-uptime",
+] }
+embassy-sync = { version = "0.8", features = ["defmt"] }
+embassy-futures = "0.1"
+embassy-usb = { version = "0.6", features = ["defmt"] }
+
+cortex-m = { version = "0.7", features = [
+  "inline-asm",
+  "critical-section-single-core",
+] }
+# `set-vtor`: the UF2 bootloader jumps to us with VTOR still pointing at its own
+# vector table, so the reset handler has to move it to ours at 0x26000. Without
+# it the first interrupt lands in the bootloader.
+cortex-m-rt = { version = "0.7", features = ["set-vtor"] }
+defmt = "1"
+# There is no debug probe on this board, so nothing drains the RTT buffer.
+# defmt-rtt starts in non-blocking-trim mode and only switches to blocking when
+# probe-rs asks it to, so leaving it in costs a RAM buffer and never stalls —
+# and it is there the moment someone does attach to the SWD pads.
+defmt-rtt = "1"
+panic-probe = { version = "1", features = ["print-defmt"] }
+static_cell = "2"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "s"
+overflow-checks = false
+
+[profile.dev]
+opt-level = 1
