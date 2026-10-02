@@ -1,0 +1,43 @@
+[package]
+name = "esp32-sig"
+description = "ESP32-WROOM-32 signal generator: drives u_T and p_s through DAC1/DAC2"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Lucas Alves de Lima"]
+
+# Standalone workspace: Xtensa target, Xtensa compiler (see nix develop .#esp32).
+[workspace]
+
+[dependencies]
+plant-trace-proto = { path = "../../proto", default-features = false }
+
+esp-hal = { version = "1.2", features = ["esp32", "unstable"] }
+esp-backtrace = { version = "0.20", features = [
+  "esp32",
+  "panic-handler",
+  "println",
+] }
+# `default-features = false` because the default `auto` backend collides with
+# an explicit one. Output goes to UART0 — the same port the protocol uses — so
+# nothing prints during normal operation; see the module docs in src/main.rs.
+esp-println = { version = "0.18", default-features = false, features = [
+  "esp32",
+  "uart",
+] }
+esp-bootloader-esp-idf = { version = "0.6", features = ["esp32"] }
+
+[features]
+default = ["output-dac"]
+# 8-bit DAC1/DAC2 on GPIO25/GPIO26 (the wiring this rig uses).
+output-dac = []
+# LEDC PWM + RC low-pass on GPIO32/GPIO33: ~11 bit, for when the DAC's 3.9 mV
+# step is the limiting factor in a small-amplitude sweep.
+output-pwm = []
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "s"
+overflow-checks = false
