@@ -1,0 +1,201 @@
+# Frequency response ΔP_e/Δu_T by stepped sine (assignment §1.2).
+#
+# One record step per frequency, each a small sine riding on the operating
+# point. Stepped sine rather than a single sweep because each point is then an
+# independent measurement with its own signal-to-noise ratio — and because the
+# analysis reduces to a least-squares fit at one known frequency, which is
+# robust in a way a windowed FFT of a chirp is not.
+#
+# The frequency grid is logarithmic and spans the plant: the reheater's 7 s
+# constant sits near 0.023 Hz, the rotor mode near 1.4 Hz. Each point runs long
+# enough for the starting transient to decay *and* leave whole cycles to fit;
+# the analysis discards the first third of each record.
+#
+# Amplitude is ±0.025 V, i.e. ±5 % of the 0.5 V u_T window, as the assignment
+# prescribes — small enough to stay inside the local linearisation, large
+# enough to sit well above the 0.7 mV ADC count. It is about nine PWM codes
+# of 2.77 mV, and the fit is against the u_T read back, so what quantisation
+# there is costs harmonics, not accuracy.
+name = "freq-u"
+description = "Stepped-sine frequency response of P_e to u_T at the nominal operating point"
+fs_hz = 1000
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
+
+[[step]]
+kind = "settle"
+name = "operating-point"
+u_t = 2.50
+p_s = 0.80
+timeout_s = 200
+
+[[step]]
+kind = "record"
+name = "sine-0p02hz"
+duration_s = 152.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 0.02
+cycles = 3
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-0p05hz"
+duration_s = 82.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 0.05
+cycles = 4
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-0p1hz"
+duration_s = 52.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 0.1
+cycles = 5
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-0p2hz"
+duration_s = 32.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 0.2
+cycles = 6
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-0p35hz"
+duration_s = 24.9
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 0.35
+cycles = 8
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-0p7hz"
+duration_s = 16.3
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 0.7
+cycles = 10
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-1hz"
+duration_s = 14.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 1
+cycles = 12
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-1p4hz"
+duration_s = 12.7
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 1.4
+cycles = 15
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-2hz"
+duration_s = 12.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 2
+cycles = 20
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-3hz"
+duration_s = 10.3
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 3
+cycles = 25
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "record"
+name = "sine-5hz"
+duration_s = 8.0
+[step.u_t]
+kind = "sine"
+center = 2.50
+amplitude = 0.025
+freq_hz = 5
+cycles = 30
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+# Total excitation time: 416 s, plus settling.
