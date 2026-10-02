@@ -1,0 +1,51 @@
+# Static curve p_s × P_e with the valve held at its operating point
+# (assignment §1.1). Steam pressure is a disturbance, not a second manipulated
+# variable — this curve says how strongly it feeds through, not how to use it.
+#
+# The staircase spans 0.55 … 0.91 V: ten plateaus centred on the 0.80 V
+# operating point, inside the 0.95 V safety guard the outputs are configured
+# with. (It used to start at 0.60 and run past that guard, which nothing caught
+# until the experiment files gained a validation test.)
+name = "static-p"
+description = "Static curve p_s x P_e with u_T held at the operating point"
+fs_hz = 1000
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
+
+[[step]]
+kind = "settle"
+name = "operating-point"
+u_t = 2.50
+p_s = 0.55
+timeout_s = 200
+
+[[step]]
+kind = "record"
+name = "staircase-up"
+duration_s = 460
+
+[step.u_t]
+kind = "hold"
+level = 2.50
+
+[step.p_s]
+kind = "staircase"
+start = 0.55
+step = 0.04
+steps = 10
+dwell_s = 45
