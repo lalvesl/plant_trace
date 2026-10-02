@@ -1,0 +1,26 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# The Supermini has no debug probe: flashing goes through its Adafruit
+# bootloader, so `cargo run --release` converts the ELF and hands it over —
+# either onto the UF2 drive or through serial DFU, whichever the board is
+# offering. Double-tap RESET first.
+#
+# With an SWD probe wired to the pads, this is the faster loop instead — it also
+# gives you the defmt log, which UF2 flashing cannot:
+#   runner = "probe-rs run --chip nRF52840_xxAA"
+runner = "../../tools/flash.sh"
+rustflags = [
+  "-C",
+  "linker=flip-link",
+  "-C",
+  "link-arg=-Tlink.x",
+  "-C",
+  "link-arg=-Tdefmt.x",
+  "-C",
+  "link-arg=--nmagic",
+]
+
+[env]
+DEFMT_LOG = "info"
