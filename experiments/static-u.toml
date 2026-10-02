@@ -1,0 +1,59 @@
+# Static gain curve u_T × P_e, at nominal steam pressure (assignment §1.1).
+#
+# A staircase rather than a sweep: each plateau is long enough for the plant to
+# reach steady state, which is what a *static* curve means. The reheater's 7 s
+# constant needs ~35 s to settle, so the dwell is 45 s — shorten it only after
+# checking on the recording that the plateaus are actually flat.
+name = "static-u"
+description = "Static curve u_T x P_e with p_s held at nominal"
+fs_hz = 1000
+
+# p_s: bench calibration, from `plant-trace check dc` on 2026-09-27 (1 kOhm
+# ladders, USB power): the rig's own ADC read the output back through its
+# 10 kOhm sense resistor. Its absolute scale is the nRF52840's internal 0.6 V
+# reference, +/-1.5 % before calibration — the same scale every recorded u_t,
+# p_s and P_e is in, which is what the analysis compares. Re-run `check dc`
+# after any change to the ladders or the supply; a meter reading (§2b of
+# docs/EXPERIMENTS.md) replaces these if absolute volts are ever needed.
+#
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
+
+[[step]]
+kind = "settle"
+name = "operating-point"
+u_t = 2.325
+p_s = 0.80
+timeout_s = 200
+
+# 2.325 V to 2.70 V in 16 plateaus of 45 s. Both directions would show the
+# valve's hysteresis, if it has any; run static-u-down.toml for that.
+[[step]]
+kind = "record"
+name = "staircase-up"
+duration_s = 730
+
+[step.u_t]
+kind = "staircase"
+start = 2.325
+step = 0.025
+steps = 16
+dwell_s = 45
+
+[step.p_s]
+kind = "hold"
+level = 0.80
