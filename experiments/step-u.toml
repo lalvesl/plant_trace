@@ -1,0 +1,111 @@
+# Step response ΔP_e/Δu_T at two operating points (assignment §1.2).
+#
+# ±5 % steps, up and down, at a low and a high valve opening. Two operating
+# points because the valve is non-linear: the incremental gain at 2.425 V is
+# not the one at 2.60 V, and a single step cannot show that.
+#
+# Each record step holds the base level for 20 s before the jump, so the
+# recording contains its own baseline — the analysis measures the step from the
+# data rather than from when the host sent a command.
+name = "step-u"
+description = "Step response of P_e to +/-5% steps of u_T at two operating points"
+fs_hz = 1000
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
+
+# ── low operating point ─────────────────────────────────────────────────────
+[[step]]
+kind = "settle"
+name = "op-low"
+u_t = 2.425
+p_s = 0.80
+timeout_s = 200
+
+[[step]]
+kind = "record"
+name = "low-step-up"
+duration_s = 80
+[step.u_t]
+kind = "step"
+base = 2.425
+step = 0.025
+hold_s = 20
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "settle"
+name = "op-low-high"
+u_t = 2.45
+p_s = 0.80
+timeout_s = 120
+
+[[step]]
+kind = "record"
+name = "low-step-down"
+duration_s = 80
+[step.u_t]
+kind = "step"
+base = 2.45
+step = -0.025
+hold_s = 20
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+# ── high operating point ────────────────────────────────────────────────────
+[[step]]
+kind = "settle"
+name = "op-high"
+u_t = 2.60
+p_s = 0.80
+timeout_s = 200
+
+[[step]]
+kind = "record"
+name = "high-step-up"
+duration_s = 80
+[step.u_t]
+kind = "step"
+base = 2.60
+step = 0.025
+hold_s = 20
+[step.p_s]
+kind = "hold"
+level = 0.80
+
+[[step]]
+kind = "settle"
+name = "op-high-high"
+u_t = 2.625
+p_s = 0.80
+timeout_s = 120
+
+[[step]]
+kind = "record"
+name = "high-step-down"
+duration_s = 80
+[step.u_t]
+kind = "step"
+base = 2.625
+step = -0.025
+hold_s = 20
+[step.p_s]
+kind = "hold"
+level = 0.80
