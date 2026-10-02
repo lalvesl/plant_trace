@@ -1,0 +1,60 @@
+# The loopback check for the automatic Bode: the `P_e` input wired to the
+# `u_T` ladder output (where the u_T sense also reads) instead of the
+# plant, so the true transfer is exactly
+# 1 — 0 dB and 0° at every frequency. Anything else the sweep reports is the
+# measurement. With the plant unplugged:
+#
+#     plant-trace bode experiments/bode-wire.toml
+#
+# or against the simulator in the same configuration:
+#
+#     plant-trace simulate --plant wire-u --speed 5 &
+#     plant-trace bode experiments/bode-wire.toml --daq tcp://127.0.0.1:7801
+#
+# What to expect (docs/EXPERIMENTS.md, "Automatic Bode"): gain 0 dB to a few
+# hundredths; raw phase a *lead* growing linearly with frequency, +6.4° at
+# 100 Hz, because P_e is converted 2 × 89.5 µs after u_T; corrected phase 0°
+# to a few hundredths; and a pure-delay fit of about −179 µs, i.e. an implied
+# scan spacing of about 89.5 µs per channel — what this board measured
+# (2026-09-27; the datasheet estimate was 96 µs). A clearly different spacing
+# is the real one for your board — put it in `scan_spacing_s` of every plan.
+name = "bode-wire"
+description = "Loopback: P_e wired to the u_T stage output; measures the scan skew"
+excite = "u_t"
+response = "p_e"
+center_v = 2.50
+# Large, because nothing downstream has to stay linear: more signal, less
+# quantisation in the phase.
+amplitude_v = 0.15
+hold_v = 0.50
+frequencies_hz = [1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 70.0, 100.0]
+# Twice the tick, so the tick's first images (tick ± f) do not fold onto f.
+fs_hz = 2000
+initial_settle_s = 1.0
+settle_cycles = 5.0
+settle_min_s = 0.2
+settle_max_s = 2.0
+measure_cycles = 20.0
+measure_min_s = 2.0
+measure_max_s = 5.0
+scan_spacing_s = 0.0000895
+correct_skew = true
+# No plant in the loop — a wire — so this plan may go past the plant's 15 Hz.
+max_freq_hz = 100.0
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
