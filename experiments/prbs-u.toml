@@ -1,0 +1,55 @@
+# Broadband estimate of ΔP_e/Δu_T from a PRBS (assignment §1.2, cross-check).
+#
+# A maximum-length sequence excites every frequency up to roughly 1/(3·bit_s)
+# at once, so five minutes here covers what the stepped sine spends seven on.
+# It is a cross-check rather than a replacement: the sine points have far
+# better signal-to-noise at each individual frequency, and the two disagreeing
+# is itself a finding worth reporting.
+#
+# bit_s = 0.7 s puts the useful band at roughly 0.005 … 0.5 Hz, which covers
+# the reheater and the crossover; order 9 gives a 511-bit sequence, i.e. 358 s
+# before it repeats, so the whole record is one period of the sequence.
+name = "prbs-u"
+description = "PRBS excitation of u_T for a broadband estimate of the valve path"
+fs_hz = 1000
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
+
+[[step]]
+kind = "settle"
+name = "operating-point"
+u_t = 2.50
+p_s = 0.80
+timeout_s = 200
+
+[[step]]
+kind = "record"
+name = "prbs"
+duration_s = 370
+
+[step.u_t]
+kind = "prbs"
+center = 2.50
+amplitude = 0.025
+bit_s = 0.7
+order = 9
+duration_s = 358
+
+[step.p_s]
+kind = "hold"
+level = 0.80
