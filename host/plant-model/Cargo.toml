@@ -1,0 +1,9 @@
+[package]
+name = "plant-model"
+description = "Reference model of the steam-turbine plant: drives the simulator and validates the identification code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
