@@ -1,0 +1,52 @@
+# Automatic stepped-sine Bode of ΔP_e/Δp_s (assignment §1.2), for
+#
+#     plant-trace bode experiments/bode-p.toml
+#
+# The same measurement as freq-p.toml, run as one sweep on one stream and
+# fitted as it goes (see docs/EXPERIMENTS.md, "Automatic Bode"). This is a
+# Bode plan, not an experiment file: `plant-trace run` does not read it.
+#
+# Same grid and timing as bode-u.toml — the disturbance path goes through the
+# same reheater and the same rotor mode.
+#
+# Amplitude ±0.05 V, i.e. ±5 % of a 1 V span, as the assignment prescribes.
+name = "bode-p"
+description = "Stepped-sine frequency response of P_e to p_s at the nominal operating point"
+excite = "p_s"
+response = "p_e"
+center_v = 0.80
+amplitude_v = 0.05
+# u_T is held here throughout.
+hold_v = 2.50
+frequencies_hz = [
+    0.02, 0.03, 0.05, 0.08, 0.12, 0.2, 0.3, 0.5, 0.8,
+    1.0, 1.2, 1.4, 1.6, 2.0, 3.0, 5.0,
+]
+fs_hz = 1000
+initial_settle_s = 60.0
+settle_cycles = 2.0
+settle_min_s = 5.0
+settle_max_s = 30.0
+measure_cycles = 4.0
+measure_min_s = 10.0
+measure_max_s = 100.0
+# Nominal SAADC scan spacing; P_e is converted one slot after p_s.
+scan_spacing_s = 0.0000895
+correct_skew = true
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
