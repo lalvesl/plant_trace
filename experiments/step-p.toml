@@ -1,0 +1,66 @@
+# Step response ΔP_e/Δp_s at the nominal operating point (assignment §1.2).
+#
+# The pressure disturbance enters the plant multiplicatively, ahead of the
+# turbine's time constants, so its step response shares the turbine dynamics
+# with the valve path but not the valve's own lag and dead time — which is the
+# comparison §1.3 asks for.
+name = "step-p"
+description = "Step response of P_e to +/-5% steps of p_s at u_T0"
+fs_hz = 1000
+
+# u_T reaches the plant through a ladder whose shunt is a divider off 3.3 V
+# (docs/HARDWARE.md): 2.150 V at code 0, 2.77 mV per code, and the plant takes
+# it in 2.25-2.75 V. These are nominal numbers, from 5 % resistor values;
+# replace the first two with what `plant-trace check dc` fits on the bench.
+# The window may be narrowed but never widened past what the plant takes.
+[outputs.u_t]
+volts_per_code = 0.002771
+offset_v = 2.1499
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004237
+offset_v = 0.0021
+min_v = 0.05
+max_v = 0.95
+
+[[step]]
+kind = "settle"
+name = "operating-point"
+u_t = 2.50
+p_s = 0.80
+timeout_s = 200
+
+[[step]]
+kind = "record"
+name = "pressure-step-up"
+duration_s = 80
+[step.u_t]
+kind = "hold"
+level = 2.50
+[step.p_s]
+kind = "step"
+base = 0.80
+step = 0.04
+hold_s = 20
+
+[[step]]
+kind = "settle"
+name = "op-raised"
+u_t = 2.50
+p_s = 0.84
+timeout_s = 120
+
+[[step]]
+kind = "record"
+name = "pressure-step-down"
+duration_s = 80
+[step.u_t]
+kind = "hold"
+level = 2.50
+[step.p_s]
+kind = "step"
+base = 0.84
+step = -0.04
+hold_s = 20
