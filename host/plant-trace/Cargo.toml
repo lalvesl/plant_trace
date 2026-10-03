@@ -1,0 +1,35 @@
+[package]
+name = "plant-trace"
+description = "Acquisition, experiment orchestration and identification for the plant-trace rig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+plant-trace-proto.workspace = true
+plant-model.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+csv.workspace = true
+serialport.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+# The GUI (`plant-trace gui`). One binary: the GUI is a module of this crate
+# and calls the same library code the commands do, never a subprocess.
+# egui_shadcn is taken from the sibling checkout while it evolves with this
+# project; `--no-default-features` builds a headless CLI without any of it.
+eframe = { version = "0.36", default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "x11",
+  "wayland",
+], optional = true }
+egui = { version = "0.36", optional = true }
+egui_sc = { path = "../../../aaaaaaaaa/egui_shadcn/egui_sc", optional = true }
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:egui", "dep:egui_sc"]
