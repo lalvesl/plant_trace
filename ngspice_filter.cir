@@ -1,0 +1,65 @@
+* RC Low-Pass Filter - PWM to 0-1V DAC Converter
+* PWM Frequency = 62.5 kHz | Sine Wave Signal = 20 Hz
+*
+* Every part is a 1 kOhm resistor or a 100 nF capacitor. Corner at 773 Hz,
+* output impedance 1.67 kOhm. Nothing loads it: the plant input and the
+* 10 kOhm into the ADC pin are both high impedance. See docs/HARDWARE.md.
+*
+* Note: the full characterisation sweep (PWM 0-255, sines to 100 Hz, Bode)
+* is run by:
+*   nix run .#rc_filter
+*
+* --- 1. MODULATED PWM SIGNAL GENERATOR ---
+* Modulating signal (20Hz sine wave varying from 0V to 1V, centered at 0.5V)
+* SINE(offset amplitude frequency)
+Vmod mod_node 0 SINE(0.5 0.5 20)
+
+* Carrier wave (62.5kHz triangular wave varying from 0 to 1V)
+* Period = 1/62.5k = 16us. Rise and fall time = 8us
+Vtri tri_node 0 PULSE(0 1 0 8u 8u 1p 16u)
+
+* Comparator generating the 3.3V PWM (If Sine > Triangular, Output = 3.3V)
+B1 pwm_in 0 V='V(mod_node) > V(tri_node) ? 3.3 : 0'
+
+* --- 2. RC FILTER CIRCUIT ---
+* Stage 1: divider (1k+1k over 1k) and first pole
+* Ratio: 1k / (2k + 1k) = 0.3333 (maps 3.3V to 1.100V)
+* Thevenin resistance 666.7 ohm; GPIO draws 1.10 mA at full duty
+R1a pwm_in n1 1k
+R1b n1 mid_node 1k
+R2 mid_node 0 1k
+C1 mid_node 0 100n
+
+* Stage 2: second pole. Output impedance is R1||R2 + R3 = 1.67 kOhm.
+R3 mid_node out_node 1k
+C2 out_node 0 100n
+
+* --- 3. SENSE PATH TO THE ADC ---
+* One 10 kOhm series resistor straight to the pin, no divider, no clamp. The
+* pin draws no DC, so it reads the plant's voltage unchanged; the resistor
+* only limits what a fault can push into the pin's own ESD structures. 5 pF
+* stands in for the pin and the SAADC's sampling capacitor.
+R4 out_node adc_pin 10k
+C3 adc_pin 0 5p
+
+* --- 4. SIMULATION CONTROL ---
+.control
+* Defines maximum step (0.5us) to capture the 62.5kHz PWM accurately
+* Simulates up to 100ms (Exactly 2 full cycles of the 20Hz sine wave)
+tran 0.5u 100m
+
+* Set plot background colors for interactive visualization
+set color0=white
+set color1=black
+
+* Plots the filtered output voltage and the reference sine wave (0 to 1V)
+plot v(out_node) v(mod_node) title "DAC Filter Output vs Ideal Signal (20Hz)"
+
+* What the ADC actually sees: the plant's input, through 10 kOhm.
+plot v(adc_pin) title "ADC pin (the plant input, through 10 kOhm)"
+
+* Plots a small snippet (first 150us) of the 62.5kHz PWM for verification
+plot v(pwm_in) title "3.3V PWM Signal (Zoom on first 150us)" xlimit 0 150u
+
+.endc
+.end
