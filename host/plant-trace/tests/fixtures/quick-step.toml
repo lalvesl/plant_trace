@@ -1,0 +1,40 @@
+# A short version of experiments/step-u.toml, for the integration test: same
+# structure, seconds instead of minutes.
+name = "quick-step"
+description = "One settle and one step, for the test suite"
+fs_hz = 1000
+
+# The u_T ladder's nominal map, as the simulator applies it.
+[outputs.u_t]
+volts_per_code = 0.0027713
+offset_v = 2.14988
+min_v = 2.25
+max_v = 2.75
+
+[outputs.p_s]
+volts_per_code = 0.004297
+min_v = 0.05
+max_v = 0.95
+
+[[step]]
+kind = "settle"
+name = "operating-point"
+u_t = 2.50
+p_s = 0.80
+timeout_s = 60
+
+[[step]]
+kind = "record"
+name = "step-up"
+# Long enough for the reheater: five of its 7 s time constants, plus the
+# baseline before the step. A shorter record would measure a gain that is
+# simply the response caught before it arrived.
+duration_s = 70
+[step.u_t]
+kind = "step"
+base = 2.50
+step = 0.025
+hold_s = 5
+[step.p_s]
+kind = "hold"
+level = 0.80
