@@ -1,0 +1,45 @@
+* ==============================================================================
+* RC Low-Pass Filter Simulation Model (3.3 V PWM to a 0-1 V analog command)
+* ==============================================================================
+* Every part is a 1 kOhm resistor or a 100 nF capacitor, which is what the
+* bench actually stocks. See docs/HARDWARE.md for the reasoning.
+*
+*   Stage 1: divider and first pole
+*     - R1 = 2 kOhm    (1k + 1k, from the PWM pin to mid_node)
+*     - R2 = 1 kOhm    (mid_node to GND)
+*     - C1 = 100 nF    (mid_node to GND)
+*     - DC ratio: R2 / (R1 + R2) = 1/3, so 3.3 V -> 1.10 V
+*     - Thevenin resistance: R1 || R2 = 666.7 Ohm
+*     - GPIO current at full duty: 3.3 / 3k = 1.10 mA
+*
+*   Stage 2: second pole
+*     - R3 = 1 kOhm    (mid_node to out_node)
+*     - C2 = 100 nF    (out_node to GND)
+*     - Output impedance: R1||R2 + R3 = 1.67 kOhm
+*
+*   Sense path:
+*     - R4 = 10 kOhm in series to the ADC pin, nothing else. The pin draws no
+*       DC, so the filter is unloaded and the pin reads the plant's voltage;
+*       R4 only limits what a fault can push into the pin's ESD structures.
+*     - C3 = 5 pF stands in for the pin and the SAADC's sampling capacitor.
+*
+* Combined:
+*     - Poles at 796 Hz and 4775 Hz, -3 dB at 773 Hz
+*     - Attenuation at the 62.5 kHz carrier: -60.3 dB
+*     - DC gain: 1/3, so full duty is 1.100 V at the plant
+* ==============================================================================
+
+.subckt rc_filter pwm_in out_node mid_node sense_node
+  * Stage 1: divider and first pole
+  R1 pwm_in mid_node 2k
+  R2 mid_node 0 1k
+  C1 mid_node 0 100n
+
+  * Stage 2: second pole
+  R3 mid_node out_node 1k
+  C2 out_node 0 100n
+
+  * Sense path to the ADC
+  R4 out_node sense_node 10k
+  C3 sense_node 0 5p
+.ends rc_filter
