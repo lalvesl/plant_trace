@@ -1,0 +1,11 @@
+# Host + nRF52840 toolchain. The ESP32 firmware needs the Xtensa fork of rustc,
+# which rustup/rust-overlay cannot provide — it has its own toolchain file in
+# `firmware/esp32-sig/` and its own dev shell (`nix develop .#esp32`).
+[toolchain]
+channel = "stable"
+profile = "minimal"
+components = ["rust-src", "rustfmt", "clippy", "llvm-tools", "rust-analyzer"]
+targets = [
+  # nRF52840: Cortex-M4F.
+  "thumbv7em-none-eabihf",
+]
