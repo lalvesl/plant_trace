@@ -1,0 +1,34 @@
+# Bench calibration: what sits between the plant and the nRF that the firmware
+# cannot know about. Read by every command and the GUI when they open the rig
+# (from the working directory: run them from the repository root). Applied to
+# every volt the host reports or writes; the CSV header and run.json record
+# the gains in force. See host/plant-trace/src/calibration.rs.
+
+# P_e reaches ~3.5 V, past the SAADC's 3.0 V full scale, so it goes through a
+# divider before the 10 kΩ series resistor:
+#
+#   P_e ──[top]──┬──[10k]── P0.31 (AIN7)
+#                │
+#             [bottom]
+#                │
+#               GND
+#
+# Values measured with a DMM (5 % parts; the meter's own gain error cancels
+# in the ratio). Pin volts = 9.80 / (9.90 + 9.80) = 0.4975 of the plant's,
+# so P_e reads up to 6.03 V before the ADC saturates.
+[inputs.p_e]
+divider_top_ohms = 9900
+divider_bottom_ohms = 9800
+
+# The SAADC against a DMM, same correction on every channel:
+# true = (read − offset_mv) × gain_correction, at the pin. Left at its
+# defaults (1, 0). Bench check on 2026-10-20, DMM vs ADC: u_T 2.251/2.270,
+# p_s 0.977/0.996, P_e 2.473/2.518 at the plant — a ~19 mV offset at the pin,
+# the same on all three, not a gain error. Not applied: it cancels in every
+# gain, phase and step the identification extracts (only the absolute
+# operating point carries it), and 19 mV is more than the SAADC's own offset
+# after CALIBRATEOFFSET, so part of it may be ground drop that moves with the
+# plant's current.
+# [adc]
+# gain_correction = 1.0
+# offset_mv = 19.0
