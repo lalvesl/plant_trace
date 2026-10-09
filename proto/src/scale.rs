@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::gen::N_OUTPUTS;
+use crate::{gen::N_OUTPUTS, N_CHANNELS};
 
 /// SAADC front-end description: internal 0.6 V reference at gain 1/5 gives
 /// 3.0 V full scale **at the pin**, which is the setting this rig uses.
@@ -20,12 +20,13 @@ use crate::gen::N_OUTPUTS;
 /// `REFERENCE / GAIN` and one count is `full_scale / 2^bits` — note the
 /// divisor is `2^bits`, not `2^bits - 1`.
 ///
-/// Every channel reaches its pin through a single 10 kΩ series resistor and
-/// nothing else. The pin draws no DC, so the resistor drops nothing and the
-/// pin sees the plant's voltage unchanged. [`Self::gain_correction`] is
-/// therefore 1 by design and carries only what the bench finds the real
-/// reference to be. [`Self::to_volts`] returns **volts at the plant**, which
-/// are also volts at the pin.
+/// Every channel reaches its pin through a single 10 kΩ series resistor. The
+/// pin draws no DC, so the resistor drops nothing and the pin sees the plant's
+/// voltage unchanged — unless a divider is added in front of it, for a signal
+/// that would otherwise pass the 3.0 V full scale. [`Self::input_gain`]
+/// carries that divider, per channel; [`Self::gain_correction`] carries only
+/// what the bench finds the real reference to be, for all of them.
+/// [`Self::to_volts`] returns **volts at the plant**.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AdcScale {
     /// Input voltage corresponding to a full-scale reading.
@@ -35,10 +36,20 @@ pub struct AdcScale {
     /// Measured offset in counts, subtracted before scaling (0 after a
     /// successful `CALIBRATEOFFSET`).
     pub offset_counts: f32,
-    /// Plant volts per pin volt. 1 by design, since nothing between the plant
-    /// and the pin divides; a bench calibration folds the real reference's
-    /// error in here.
+    /// Error of the real reference, the same on every channel: 1 by design;
+    /// a bench calibration folds what it finds in here.
     pub gain_correction: f32,
+    /// Plant volts per pin volt, per channel in [`crate::Channel`] order: 1
+    /// where the plant drives the series resistor directly, `(top + bottom) /
+    /// bottom` where a divider sits in front of it. A property of the rig's
+    /// wiring, not of the firmware — the host reads it from its bench
+    /// calibration.
+    #[serde(default = "unity_gains")]
+    pub input_gain: [f32; N_CHANNELS],
+}
+
+fn unity_gains() -> [f32; N_CHANNELS] {
+    [1.0; N_CHANNELS]
 }
 
 impl AdcScale {
@@ -49,24 +60,30 @@ impl AdcScale {
         bits: 12,
         offset_counts: 0.0,
         gain_correction: 1.0,
+        input_gain: [1.0; N_CHANNELS],
     };
 
-    /// Volts per count.
+    /// Volts **at the pin** per count.
     pub fn volts_per_count(&self) -> f32 {
         self.full_scale_v * self.gain_correction / (1u32 << self.bits) as f32
     }
 
-    /// Convert a raw count to volts at the plant.
-    pub fn to_volts(&self, counts: i16) -> f32 {
-        (counts as f32 - self.offset_counts) * self.volts_per_count()
+    /// Plant volts per pin volt on channel `ch`; 1 past the last channel.
+    pub fn input_gain(&self, ch: usize) -> f32 {
+        self.input_gain.get(ch).copied().unwrap_or(1.0)
     }
 
-    /// Highest plant voltage this front end can read before it saturates.
+    /// Convert a raw count of channel `ch` to volts at the plant.
+    pub fn to_volts(&self, ch: usize, counts: i16) -> f32 {
+        (counts as f32 - self.offset_counts) * self.volts_per_count() * self.input_gain(ch)
+    }
+
+    /// Highest plant voltage channel `ch` can read before it saturates.
     ///
     /// The number to check a signal against: a step response that rings above
     /// this clips, and a clipped peak looks exactly like a well-damped one.
-    pub fn plant_full_scale_v(&self) -> f32 {
-        self.full_scale_v * self.gain_correction
+    pub fn plant_full_scale_v(&self, ch: usize) -> f32 {
+        self.full_scale_v * self.gain_correction * self.input_gain(ch)
     }
 }
 
@@ -258,11 +275,26 @@ mod tests {
         // 2.500 V at the plant is 2.500 V at the pin, and 2.5 * 4096 / 3.0
         // = 3413 counts.
         assert!(
-            (s.to_volts(3413) - 2.5).abs() < 8e-4,
+            (s.to_volts(2, 3413) - 2.5).abs() < 8e-4,
             "{}",
-            s.to_volts(3413)
+            s.to_volts(2, 3413)
         );
-        assert_eq!(s.to_volts(0), 0.0);
+        assert_eq!(s.to_volts(2, 0), 0.0);
+    }
+
+    #[test]
+    fn a_divider_in_front_of_one_channel_scales_that_channel_only() {
+        // 9.90 k over 9.80 k in front of P_e: the pin sees 0.4975 of the plant.
+        let gain = (9900.0 + 9800.0) / 9800.0;
+        let s = AdcScale {
+            input_gain: [1.0, 1.0, gain],
+            ..AdcScale::NOMINAL
+        };
+        // 1.7405 V at the pin is 2377 counts; the plant is at 3.4988 V.
+        assert!((s.to_volts(2, 2377) - 3.4988).abs() < 2e-3, "{}", s.to_volts(2, 2377));
+        assert_eq!(s.to_volts(0, 2377), AdcScale::NOMINAL.to_volts(0, 2377));
+        assert!((s.plant_full_scale_v(2) - 6.0306).abs() < 1e-3);
+        assert_eq!(s.plant_full_scale_v(0), 3.0);
     }
 
     #[test]
@@ -274,10 +306,10 @@ mod tests {
         // again.
         let s = AdcScale::NOMINAL;
         assert!(
-            s.plant_full_scale_v()
+            s.plant_full_scale_v(0)
                 >= DacScale::U_T_NOMINAL.max_v + DacScale::U_T_NOMINAL.span_v() / 2.0,
             "readable up to {} V only",
-            s.plant_full_scale_v()
+            s.plant_full_scale_v(0)
         );
     }
 
