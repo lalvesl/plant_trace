@@ -2,10 +2,10 @@
 
 use egui::Ui;
 use egui_sc::egui_components::*;
-use plant_trace_proto::scale::{AdcScale, DacScale};
+use plant_trace_proto::scale::DacScale;
 
 use super::{
-    app::Shared,
+    app::{Link, Shared},
     plot::{self, AxisSpec, Line, Plot},
     trace::{Trace, CHANNELS},
     widgets::{choose, num_f32, section, two},
@@ -171,21 +171,36 @@ impl MonitorTab {
         section(
             ui,
             "Inputs",
-            Some("Divider in front of each sense pin: volts at the plant per volt at the pin. 1 with nothing but the 10 kΩ series resistor; 9.33 behind a 10 kΩ over 1.2 kΩ divider."),
+            Some("Divider in front of each sense pin, from calibration.toml: volts at the plant per volt at the pin, already applied to every reading and every file."),
             |ui| {
+                let Link::Open {
+                    info, calibration, ..
+                } = &shared.link
+                else {
+                    muted_text(ui, "connect to see the bench calibration");
+                    return;
+                };
+                let adc = info.adc_scale();
                 for (ch, name) in CHANNELS.iter().enumerate() {
-                    if num_f32(ui, name, &mut shared.input_gain[ch], 0.1..=100.0, 0.01, "×") {
-                        // Old samples were drawn with the old ratio.
-                        self.trace.clear();
-                    }
+                    ui.horizontal(|ui| {
+                        ui.colored_label(plot::channel_color(ch), *name);
+                        code_text(
+                            ui,
+                            &format!(
+                                "×{:.4}   full scale {:.3} V",
+                                adc.input_gain(ch),
+                                adc.plant_full_scale_v(ch)
+                            ),
+                        );
+                    });
                 }
-                muted_text(
-                    ui,
-                    &format!(
-                        "P_e full scale at the plant: {:.2} V",
-                        AdcScale::NOMINAL.full_scale_v * shared.input_gain[2]
+                match calibration {
+                    Some(path) => small_text(ui, &path.display().to_string()),
+                    None => muted_text(
+                        ui,
+                        "no calibration.toml found: every input is read as direct",
                     ),
-                );
+                }
             },
         );
     }
