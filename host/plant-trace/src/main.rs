@@ -60,6 +60,16 @@ enum Command {
     /// Measure a frequency response automatically: one sine per frequency on
     /// one stream, fitted as it goes.
     Bode(BodeArgs),
+    /// Cut the samples every point of a finished Bode sweep was fitted on out
+    /// of its `stream.csv`, one CSV per point under `<sweep>/points/`. A sweep
+    /// does this itself when it ends; this is for older ones.
+    BodePoints(BodePointsArgs),
+}
+
+#[derive(Args)]
+struct BodePointsArgs {
+    /// Sweep directory (the one holding `bode.json` and `stream.csv`).
+    sweep_dir: PathBuf,
 }
 
 #[derive(Args)]
@@ -327,6 +337,7 @@ fn main() -> Result<()> {
         }),
         Command::Analyze(args) => analyze(args),
         Command::Bode(args) => run_bode(args),
+        Command::BodePoints(args) => bode_points(args),
     }
 }
 
@@ -401,6 +412,24 @@ fn run_bode(args: BodeArgs) -> Result<()> {
         }
     }
     println!("results     {}", out_dir.display());
+    println!("points      {}", out_dir.join("points").display());
+    Ok(())
+}
+
+fn bode_points(args: BodePointsArgs) -> Result<()> {
+    let export = bode::export_points(&args.sweep_dir)?;
+    println!(
+        "{} point file(s), {} rows, in {}",
+        export.files,
+        export.rows,
+        export.dir.display()
+    );
+    if !export.short.is_empty() {
+        println!(
+            "short windows (blocks lost, or not in stream.csv): points {:?}",
+            export.short
+        );
+    }
     Ok(())
 }
 
@@ -687,10 +716,28 @@ fn info(args: DeviceArgs) -> Result<()> {
     println!("channels       {}", info.channels);
     println!("resolution     {} bit", info.bits);
     println!(
-        "full scale     {:.3} V  ({:.1} µV/count, {:.2} V above the top of the u_t window)",
-        scale.plant_full_scale_v(),
+        "full scale     {:.3} V at the pin  ({:.1} µV/count)",
+        scale.full_scale_v * scale.gain_correction,
         scale.volts_per_count() * 1e6,
-        scale.plant_full_scale_v() - DacScale::U_T_NOMINAL.max_v,
+    );
+    match device.calibration_path() {
+        Some(path) => println!("calibration    {}", path.display()),
+        None => println!(
+            "calibration    none ({} not found) — every input read as direct",
+            plant_trace::calibration::FILE
+        ),
+    }
+    for (i, ch) in Channel::ALL.iter().enumerate() {
+        println!(
+            "  {:>3}  ×{:.4} at the plant, readable up to {:.3} V",
+            ch.name(),
+            scale.input_gain(i),
+            scale.plant_full_scale_v(i),
+        );
+    }
+    println!(
+        "  u_t window ends {:.2} V below the u_t full scale",
+        scale.plant_full_scale_v(0) - DacScale::U_T_NOMINAL.max_v
     );
     println!("oversample     {}×", info.oversample);
     println!("block          {} samples/channel", info.block_samples);
@@ -762,9 +809,9 @@ fn record(args: RecordArgs) -> Result<()> {
                         "\r  {:6.1} s  {:5.0} rows/s  u_t {:+.4} V  p_s {:+.4} V  p_e {:+.4} V  dropped {}",
                         rows as f64 / fs_hz as f64,
                         rows as f64 / elapsed.max(1e-3),
-                        scale.to_volts(last[0]),
-                        scale.to_volts(last[1]),
-                        scale.to_volts(last[2]),
+                        scale.to_volts(0, last[0]),
+                        scale.to_volts(1, last[1]),
+                        scale.to_volts(2, last[2]),
                         dropped,
                     );
                     let _ = std::io::Write::flush(&mut std::io::stdout());
