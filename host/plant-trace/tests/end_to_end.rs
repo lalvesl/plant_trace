@@ -17,6 +17,7 @@ use std::{
 
 use plant_model::PlantParams;
 use plant_trace::{
+    calibration::FrontEnd,
     check,
     csvout::{RunMeta, RunWriter},
     daq::{Daq, Event},
@@ -39,12 +40,18 @@ fn free_port() -> String {
 
 /// Start a simulator and return the link spec for it.
 fn start_sim(speed: f32) -> String {
+    start_sim_with(speed, AdcScale::NOMINAL)
+}
+
+/// [`start_sim`] with a front end of its own — a divider in front of an input.
+fn start_sim_with(speed: f32, adc: AdcScale) -> String {
     let addr = free_port();
     let opts = sim::Options {
         addr: addr.clone(),
         fs_hz: 1000,
         speed,
         settle_s: 150.0,
+        adc,
         ..Default::default()
     };
     thread::spawn(move || sim::run(opts));
@@ -148,6 +155,60 @@ fn records_a_steady_operating_point_where_the_model_says_it_should() {
         "u_T left the safe window"
     );
     assert!(adc.volts_per_count() < 8e-4);
+}
+
+#[test]
+fn a_divider_in_front_of_p_e_reads_as_plant_volts_once_calibrated() {
+    // The bench's 9.90 k over 9.80 k: the pin sees 0.4975 of P_e.
+    let gain = (9900.0 + 9800.0) / 9800.0;
+    let divided = AdcScale {
+        input_gain: [1.0, 1.0, gain],
+        ..AdcScale::NOMINAL
+    };
+    let params = PlantParams::default();
+    let expected = 2.25 + 0.5 * params.flow(0.60) * params.volts_per_pu;
+    let mean_p_e = |rig: &mut Daq, name: &str| {
+        rig.set_level(0, 2.55).unwrap();
+        rig.set_level(1, 0.80).unwrap();
+        let (rows, _) = record(rig, 2.0, name);
+        rows.iter().map(|r| r[3]).sum::<f32>() / rows.len() as f32
+    };
+
+    // Uncalibrated, the divider halves the reading.
+    let mut rig = Daq::open(&start_sim_with(40.0, divided), 0).unwrap();
+    assert_eq!(
+        rig.front_end(),
+        FrontEnd::DIRECT,
+        "a test picked up a calibration file"
+    );
+    let raw = mean_p_e(&mut rig, "divided-raw");
+    assert!(
+        (raw - expected / gain).abs() < 5e-3,
+        "read {raw} V, the pin is at {} V",
+        expected / gain
+    );
+
+    // With the bench calibration, plant volts again — in the CSV the run
+    // writes, and on u_T and p_s, which have no divider, nothing changes.
+    let mut rig = Daq::open(&start_sim_with(40.0, divided), 0).unwrap();
+    rig.set_front_end(FrontEnd {
+        input_gain: [1.0, 1.0, gain],
+        ..FrontEnd::DIRECT
+    });
+    assert_eq!(rig.info().unwrap().adc_scale().input_gain, [1.0, 1.0, gain]);
+    let cal = mean_p_e(&mut rig, "divided-cal");
+    assert!(
+        (cal - expected).abs() < 6e-3,
+        "read {cal} V, the plant is at {expected} V"
+    );
+    let header =
+        std::fs::read_to_string(std::env::temp_dir().join("plant-trace-divided-cal.csv")).unwrap();
+    assert!(
+        header
+            .lines()
+            .any(|l| l.starts_with("# input_gain = 1, 1, 2.0102")),
+        "the CSV does not say which gain its volts carry"
+    );
 }
 
 #[test]
@@ -513,4 +574,52 @@ fn opening_stops_a_stream_a_dead_session_left_running() {
     assert_eq!(second.info().unwrap().channels, 3);
     assert_eq!(second.start(1000).unwrap(), 1000);
     second.stop().unwrap();
+}
+
+#[test]
+fn a_sweep_that_loses_the_rig_midway_keeps_the_points_it_measured() {
+    use plant_trace::bode::{self, BodeObserver, BodePlan, BodePoint, BodeResult};
+
+    /// Pulls the plug on the simulated rig once the first point is in.
+    struct Unplug(Option<sim::SimHandle>);
+    impl BodeObserver for Unplug {
+        fn point_finished(&mut self, _point: &BodePoint) {
+            if let Some(rig) = self.0.take() {
+                rig.shutdown();
+            }
+        }
+    }
+
+    let rig = sim::spawn(sim::Options {
+        plant: sim::SimPlant::Wire { from: 0 },
+        settle_s: 0.5,
+        speed: 20.0,
+        ..sim::Options::default()
+    })
+    .unwrap();
+    let mut daq = Daq::open(rig.spec(), 0).unwrap();
+    let plan = BodePlan {
+        frequencies_hz: vec![5.0, 10.0, 20.0],
+        initial_settle_s: 0.2,
+        settle_cycles: 2.0,
+        settle_min_s: 0.1,
+        measure_cycles: 4.0,
+        measure_min_s: 0.2,
+        max_freq_hz: 100.0,
+        ..BodePlan::default()
+    };
+    let dir = std::env::temp_dir().join(format!("plant-trace-unplugged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let err = bode::run_bode(&mut daq, &plan, Some(&dir), &mut Unplug(Some(rig)))
+        .expect_err("the rig went away, the sweep cannot have finished");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("stopped after 1 point(s)"), "{msg}");
+
+    let saved = BodeResult::load(&dir).expect("the measured point was not saved");
+    assert_eq!(saved.points.len(), 1);
+    assert!(saved.cancelled);
+    assert!(dir.join("bode.csv").exists());
+    assert!(dir.join("points").read_dir().unwrap().next().is_some());
+    let _ = std::fs::remove_dir_all(dir);
 }
