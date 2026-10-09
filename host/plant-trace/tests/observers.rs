@@ -200,8 +200,12 @@ fn every_bode_plan_in_the_repository_is_valid() {
             continue;
         }
         let plan = BodePlan::load(&path).unwrap_or_else(|e| panic!("{name}: {e:#}"));
-        let minutes = plan.estimated_duration().as_secs_f64() / 60.0;
-        assert!(minutes < 30.0, "{name} takes {minutes:.0} min");
+        // A real plan spends 15 s settling every point and a cycle or more
+        // measuring it, and a dense one runs for hours (a 4 h sweep has been
+        // run on the bench). Past 20 h a plan has most likely gained a decade
+        // or a density it did not mean to.
+        let hours = plan.estimated_duration().as_secs_f64() / 3600.0;
+        assert!(hours < 20.0, "{name} takes {hours:.1} h");
         checked += 1;
     }
     assert!(checked >= 2, "only {checked} Bode plans found");
