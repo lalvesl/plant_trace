@@ -76,6 +76,8 @@ pub enum Evt {
         info: Info,
         /// Output description.
         outputs: GenInfo,
+        /// The bench calibration file the input gains came from, if any.
+        calibration: Option<std::path::PathBuf>,
     },
     /// The link is closed, with the reason if it was not asked for.
     Disconnected(Option<String>),
@@ -255,6 +257,7 @@ impl Rig {
                 );
                 let outputs = daq.gen_info()?;
                 let adc = info.adc_scale();
+                let calibration = daq.calibration_path().map(Into::into);
                 self.link = Some(Link {
                     daq,
                     spec: spec.clone(),
@@ -264,6 +267,7 @@ impl Rig {
                     spec,
                     info,
                     outputs,
+                    calibration,
                 });
             }
             Cmd::Disconnect => self.close(None),
@@ -419,7 +423,7 @@ pub(crate) fn to_rows(adc: &AdcScale, n: u16, channels: u8, counts: &[i16]) -> V
         .map(|i| {
             let mut row = [0.0f32; 3];
             for (c, v) in row.iter_mut().enumerate().take(ch.min(3)) {
-                *v = adc.to_volts(counts[i * ch + c]);
+                *v = adc.to_volts(c, counts[i * ch + c]);
             }
             row
         })
