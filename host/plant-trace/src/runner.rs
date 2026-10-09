@@ -40,6 +40,10 @@ pub struct RunConfig {
     pub out_dir: Option<PathBuf>,
 }
 
+fn unity_gains() -> [f32; N_CHANNELS] {
+    [1.0; N_CHANNELS]
+}
+
 /// What happened, written next to the data as `run.json`.
 ///
 /// Deserialisable as well as serialisable because the analysis reads it back:
@@ -63,6 +67,11 @@ pub struct Manifest {
     pub adc_full_scale_v: f32,
     /// ADC resolution.
     pub adc_bits: u8,
+    /// Plant volts per pin volt per input (`u_t`, `p_s`, `p_e`), from the
+    /// bench calibration: already applied to every volt column. Runs from
+    /// before it existed read as all 1.
+    #[serde(default = "unity_gains")]
+    pub adc_input_gain: [f32; N_CHANNELS],
     /// Output calibration in force.
     pub outputs: Vec<OutputRecord>,
     /// The steps, in order — only those that were reached when the run was
@@ -346,6 +355,7 @@ pub fn run_on(
         output_tick_hz: gen_info.tick_hz,
         adc_full_scale_v: adc.full_scale_v,
         adc_bits: adc.bits,
+        adc_input_gain: adc.input_gain,
         outputs: scales
             .iter()
             .map(|(name, s)| OutputRecord {
@@ -491,8 +501,8 @@ fn to_rows(adc: &AdcScale, channels: u8, counts: &[i16]) -> Vec<[f32; 3]> {
         .chunks_exact(ch)
         .map(|frame| {
             let mut row = [0.0f32; N_CHANNELS];
-            for (v, c) in row.iter_mut().zip(frame) {
-                *v = adc.to_volts(*c);
+            for (ch, (v, c)) in row.iter_mut().zip(frame).enumerate() {
+                *v = adc.to_volts(ch, *c);
             }
             row
         })
