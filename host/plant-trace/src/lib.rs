@@ -8,6 +8,7 @@
 
 pub mod analysis;
 pub mod bode;
+pub mod calibration;
 pub mod check;
 pub mod csvout;
 pub mod daq;
