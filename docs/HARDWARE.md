@@ -14,7 +14,7 @@ the Adafruit nRF52 bootloader.
 | --- | --- | --- | --- | --- |
 | `u_T` valve command | `P1.11` (`D14`), 62.5 kHz PWM | 1:3 divider + 2-pole RC, 773 Hz, with its middle node shunted to a 2.74 V divider off 3.3 V instead of to ground: 2.150 V + 0.709 V × duty | plant input, and 10 kΩ to `P0.02` / AIN0 | **2.25-2.75 V**, centred on 2.5 V |
 | `p_s` steam pressure | `P1.13` (`D15`), 62.5 kHz PWM | 1:3 divider + 2-pole RC, 773 Hz | plant input, and 10 kΩ to `P0.29` / AIN5 | 0-1 V |
-| `P_e` electrical power | plant output | 10 kΩ series resistor | `P0.31` / AIN7 | **2.25-2.75 V**, like `u_T` |
+| `P_e` electrical power | plant output | 9.90 k / 9.80 k divider, then the 10 kΩ series resistor (see *The `P_e` divider*) | `P0.31` / AIN7 | expected 2.25-2.75 V like `u_T`; measured up to ~3.5 V, so read at 0.4975× |
 
 One board drives and measures. The two outputs are wired back into the SAADC
 at the node the plant is fed from, so what the plant is fed and what it answers land on the same
@@ -393,6 +393,42 @@ inside the rating on its own. But the diodes leaked enough through the
 divider's ~6 kΩ to take ~3 counts off a 1 V reading at 25 °C, and more when
 warm. If this rig is ever moved to signals that can exceed the rail, put the
 divider back and leave the diodes out.
+
+### The `P_e` divider
+
+The box's output was expected in the same 2.25-2.75 V window as `u_T`; on the
+bench it reached ~3.5 V, past the 3.0 V full scale. So `P_e` alone goes
+through a divider before its series resistor:
+
+```
+  P_e ──[9.90k]──┬──[10k]──► P0.31
+                 │
+              [9.80k]
+                 │
+                GND
+```
+
+The two resistors are 5 % parts, so their ratio is only known to about ±5 %
+from the bands — too coarse for a gain. They are **measured** with a DMM
+instead (the meter's own gain error cancels in the ratio) and written in
+`calibration.toml` at the repository root:
+
+```toml
+[inputs.p_e]
+divider_top_ohms = 9900
+divider_bottom_ohms = 9800
+```
+
+`Daq::open` loads it, and every counts→volts conversion goes through the
+`AdcScale` it lands in (`input_gain`, per channel), so recordings, experiments,
+the Bode sweep, the checks and the GUI all report **plant volts**: ×2.0102 on
+`P_e`, ×1 on the other two. CSV headers (`# input_gain = …`) and `run.json`
+(`adc_input_gain`) record the gains a file was written with. `P_e` now reads
+up to 6.03 V before the ADC saturates, at 1.47 mV per count.
+
+The divider's Thévenin resistance (4.9 kΩ) adds to the series 10 kΩ: 14.9 kΩ
+against the 40 kΩ that the 10 µs acquisition time allows. Change a resistor,
+re-measure, edit the file — nothing needs reflashing.
 
 Reference and gain are per-channel settings on this part (`CH[n].CONFIG` holds
 `REFSEL`, `GAIN`, `TACQ` and `BURST`; only `RESOLUTION` and `OVERSAMPLE` are
