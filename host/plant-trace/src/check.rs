@@ -487,7 +487,7 @@ fn collect(daq: &mut Daq, adc: &AdcScale, rows: usize) -> Result<Vec<Vec<f64>>> 
                 }
                 for frame in counts.chunks_exact(ch) {
                     for (c, sample) in frame.iter().enumerate() {
-                        out[c].push(adc.to_volts(*sample) as f64);
+                        out[c].push(adc.to_volts(c, *sample) as f64);
                     }
                 }
                 got += n as usize;
