@@ -7,7 +7,6 @@ use egui_sc::egui_components::*;
 use super::{
     bode_tab::BodeTab,
     check_tab::CheckTab,
-    jobs::JobEvent,
     monitor::MonitorTab,
     results::ResultsTab,
     scenario::ScenarioTab,
@@ -24,6 +23,8 @@ pub(crate) enum Link {
         spec: String,
         info: Info,
         outputs: GenInfo,
+        /// The bench calibration file in use, if any.
+        calibration: Option<std::path::PathBuf>,
     },
 }
 
@@ -50,11 +51,6 @@ pub(crate) struct Shared {
     /// `(volts_per_code, offset_v)` per output from the last DC sweep, for
     /// the scenario editor to adopt.
     pub(crate) calibration: [Option<(f32, f32)>; 2],
-    /// Volts at the plant per volt at the rig's input, per channel: the ratio
-    /// of whatever divider sits in front of a sense pin. Applied to every row
-    /// the GUI draws. 1 everywhere on the bench today: every signal reaches
-    /// its pin through the 10 kΩ series resistor alone.
-    pub(crate) input_gain: [f32; 3],
 }
 
 impl Shared {
@@ -123,7 +119,6 @@ impl App {
                 generating: false,
                 status: String::new(),
                 calibration: [None; 2],
-                input_gain: [1.0; 3],
             },
             dark,
             tab: 0,
@@ -167,6 +162,7 @@ impl App {
                     spec,
                     info,
                     outputs,
+                    calibration,
                 } => {
                     Toaster::push_with_desc(
                         ctx,
@@ -178,6 +174,7 @@ impl App {
                         spec,
                         info,
                         outputs,
+                        calibration,
                     };
                     // Live view on by default: the first thing anyone wants
                     // is to see the three signals move.
@@ -197,10 +194,7 @@ impl App {
                 }
                 Evt::Streaming(fs) => self.shared.streaming = fs,
                 Evt::Generating(on) => self.shared.generating = on,
-                Evt::Samples { first, fs_hz, rows } => {
-                    let rows = scaled(rows, self.shared.input_gain);
-                    self.monitor.push(first, fs_hz, &rows)
-                }
+                Evt::Samples { first, fs_hz, rows } => self.monitor.push(first, fs_hz, &rows),
                 Evt::Busy(label) => {
                     // Every job parks the outputs when it ends.
                     self.shared.generating = false;
@@ -225,14 +219,6 @@ impl App {
                     self.check.sine_done(ctx, r);
                 }
                 Evt::Job(e) => {
-                    let e = match e {
-                        JobEvent::Samples { first, fs_hz, rows } => JobEvent::Samples {
-                            first,
-                            fs_hz,
-                            rows: scaled(rows, self.shared.input_gain),
-                        },
-                        other => other,
-                    };
                     self.scenario.job_event(&e);
                     self.bode.job_event(&e);
                 }
@@ -401,7 +387,9 @@ impl App {
             heading4(ui, "plant-trace");
             Separator::vertical().show(ui);
             match &self.shared.link {
-                Link::Open { spec, info, outputs } => {
+                Link::Open {
+                    spec, info, outputs, ..
+                } => {
                     Badge::new("connected").show(ui);
                     small_text(
                         ui,
@@ -507,16 +495,6 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
-}
-
-/// Rows in rig-input volts to rows in plant volts.
-fn scaled(mut rows: Vec<[f32; 3]>, gain: [f32; 3]) -> Vec<[f32; 3]> {
-    for r in &mut rows {
-        for (v, g) in r.iter_mut().zip(gain) {
-            *v *= g;
-        }
-    }
-    rows
 }
 
 /// Serial ports that look like the rig, newest first.
