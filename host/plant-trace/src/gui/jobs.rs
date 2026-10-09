@@ -278,6 +278,34 @@ mod tests {
             .collect();
         assert_eq!(points.len(), 2);
         assert!(events.iter().any(|e| matches!(e, JobEvent::Samples { .. })));
+
+        // Every point's fit window, sample for sample, in points/: the same
+        // rows the fit saw, so refitting one reproduces its amplitude.
+        for p in &points {
+            let file = outcome
+                .dir
+                .join("points")
+                .join(format!("{:03}-{:.5}Hz.csv", p.index, p.freq_hz));
+            let text = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            let rows: Vec<Vec<f64>> = text
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.starts_with("t_window_s"))
+                .map(|l| l.split(',').map(|v| v.parse().unwrap()).collect())
+                .collect();
+            assert_eq!(rows.len(), p.samples, "{} Hz", p.freq_hz);
+            assert_eq!(rows[0][0], 0.0);
+            let t: Vec<f64> = rows.iter().map(|r| r[0]).collect();
+            let u: Vec<f64> = rows.iter().map(|r| r[5]).collect();
+            let refit = crate::analysis::freq::sine_fit(&t, &u, p.freq_hz as f32 as f64);
+            assert!(
+                (refit.amplitude - p.input_amplitude_v).abs() < 1e-4,
+                "{} Hz: refit {} V, the point says {} V",
+                p.freq_hz,
+                refit.amplitude,
+                p.input_amplitude_v
+            );
+        }
         for p in points {
             assert!(p.gain_db.abs() < 0.1, "{} Hz: {} dB", p.freq_hz, p.gain_db);
             assert!(
