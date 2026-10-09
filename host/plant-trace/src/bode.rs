@@ -190,6 +190,57 @@ pub fn per_decade(f0: f64, f1: f64, points_per_decade: f64) -> Vec<f64> {
     log_space(f0, f1, n)
 }
 
+/// One stretch of the frequency axis and how densely to cover it: a log grid
+/// from `from_hz` to `to_hz`, both included, with at least `per_decade`
+/// points in every decade ([`per_decade`]).
+///
+/// A plan describes its frequencies as a few of these — sparse where the
+/// response is flat, dense where it bends — and [`from_bands`] turns them
+/// into the list that is actually run.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Band {
+    /// Start of the band, hertz.
+    pub from_hz: f64,
+    /// End of the band, hertz.
+    pub to_hz: f64,
+    /// Points per decade inside it.
+    pub per_decade: f64,
+}
+
+impl Band {
+    /// This band's frequencies, rounded like [`from_bands`] rounds them.
+    pub fn frequencies(&self) -> Vec<f64> {
+        per_decade(
+            self.from_hz.min(self.to_hz),
+            self.from_hz.max(self.to_hz),
+            self.per_decade,
+        )
+        .into_iter()
+        .map(round_sig4)
+        .collect()
+    }
+}
+
+/// The frequencies a set of bands covers, ascending, without repeats: each
+/// band's [`per_decade`] grid, rounded to 4 significant figures so the list
+/// reads cleanly in a file, and merged — where two bands meet, the shared
+/// edge appears once.
+pub fn from_bands(bands: &[Band]) -> Vec<f64> {
+    let mut all: Vec<f64> = bands.iter().flat_map(Band::frequencies).collect();
+    all.sort_by(f64::total_cmp);
+    all.dedup_by(|a, b| (*a - *b).abs() <= 1e-9 * b.abs());
+    all
+}
+
+/// `x` rounded to 4 significant figures.
+pub(crate) fn round_sig4(x: f64) -> f64 {
+    if x == 0.0 || !x.is_finite() {
+        return x;
+    }
+    format!("{x:.3e}").parse().unwrap_or(x)
+}
+
 // ── the plan ────────────────────────────────────────────────────────────────
 
 /// Everything a stepped-sine Bode run needs, as it is written in a TOML file.
@@ -221,6 +272,12 @@ pub struct BodePlan {
     /// Frequencies, hertz, measured in this order. Phase is unwrapped along
     /// this order, so keep it monotonic (see [`log_space`], [`per_decade`]).
     pub frequencies_hz: Vec<f64>,
+    /// The bands [`Self::frequencies_hz`] was generated from
+    /// ([`from_bands`]), kept so the GUI can show and edit them. Only a
+    /// record: the list above is what runs, single points added by hand
+    /// included. Empty for a plan written as a plain list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bands: Vec<Band>,
     /// Sample rate to ask the rig for, hertz. At least four samples per
     /// period of the highest frequency, as for `check sine`.
     pub fs_hz: u32,
@@ -283,6 +340,7 @@ impl Default for BodePlan {
             // 0.02 Hz is the reheater's corner region, 5 Hz well past the
             // 1.4 Hz rotor mode: 13 points, 5 per decade.
             frequencies_hz: per_decade(0.02, 5.0, 5.0),
+            bands: Vec::new(),
             fs_hz: 1000,
             initial_settle_s: 60.0,
             settle_cycles: 2.0,
@@ -994,7 +1052,11 @@ pub fn run_bode(
     let _ = daq.gen_stop();
     let _ = daq.park();
     let _ = daq.stop();
-    outcome?;
+    // A sweep that fails hours in — the link drops, the board resets — still
+    // keeps what it measured: the points so far are saved like a cancelled
+    // sweep's, and the error says where they are.
+    let failure = outcome.err();
+    let cancelled = cancelled || failure.is_some();
 
     let freqs: Vec<f64> = points.iter().map(|p| p.freq_hz).collect();
     let raw: Vec<f64> = points.iter().map(|p| p.raw_phase_deg).collect();
@@ -1014,10 +1076,183 @@ pub fn run_bode(
         implied_scan_spacing_s,
         cancelled,
     };
-    if let Some(dir) = out_dir {
-        result.save(dir)?;
+    let saved = match out_dir {
+        Some(dir) => result.save(dir).and_then(|()| {
+            export_points(dir)
+                .map(|_| ())
+                .context("cutting the points' samples out of stream.csv")
+        }),
+        None => Ok(()),
+    };
+    match failure {
+        Some(e) => Err(match (out_dir, saved) {
+            (Some(dir), Ok(())) => e.context(format!(
+                "the sweep stopped after {} point(s); those are saved in {}",
+                result.points.len(),
+                dir.display()
+            )),
+            (_, Err(save)) => {
+                e.context(format!("and saving what was measured failed too: {save:#}"))
+            }
+            (None, Ok(())) => e,
+        }),
+        None => saved.map(|()| result),
     }
-    Ok(result)
+}
+
+/// What [`export_points`] wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointsExport {
+    /// The directory the files are in: `<sweep>/points`.
+    pub dir: PathBuf,
+    /// Files written, one per point.
+    pub files: usize,
+    /// Rows written over all of them.
+    pub rows: u64,
+    /// Points (by index) whose window has fewer rows in `stream.csv` than it
+    /// should — blocks lost on the link.
+    pub short: Vec<usize>,
+}
+
+/// Cut the samples each point was fitted on out of a sweep's `stream.csv`,
+/// one file per point under `<dir>/points/`: `NNN-<f>Hz.csv`, every channel
+/// in counts and volts exactly as the stream has them, with the time inside
+/// the window prepended and the point's fit in the header.
+///
+/// Works on any finished sweep directory (it needs `bode.json` and
+/// `stream.csv`), so older sweeps can be exported after the fact. Rows are
+/// matched by stream index (`t_s × fs`); a stream whose time runs backwards
+/// — leftover blocks of an earlier session, before the stream restarted at 0
+/// — is taken from the restart on.
+pub fn export_points(dir: &Path) -> Result<PointsExport> {
+    use std::io::{BufRead, BufWriter};
+
+    let result = BodeResult::load(dir)?;
+    let fs = result.fs_hz as f64;
+    let windows: Vec<(u64, u64)> = result
+        .points
+        .iter()
+        .map(|p| {
+            let len = (p.cycles / p.freq_hz * fs).round() as u64;
+            (p.first_sample, p.first_sample + len.max(p.samples as u64))
+        })
+        .collect();
+    let out_dir = dir.join("points");
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    let path_of = |i: usize| {
+        let p = &result.points[i];
+        out_dir.join(format!("{:03}-{:.5}Hz.csv", p.index, p.freq_hz))
+    };
+
+    let stream_path = dir.join("stream.csv");
+    let reader = std::io::BufReader::new(
+        std::fs::File::open(&stream_path)
+            .with_context(|| format!("opening {}", stream_path.display()))?,
+    );
+    let mut stream_header: Vec<String> = Vec::new();
+    let mut columns = String::new();
+    let mut files: Vec<Option<BufWriter<std::fs::File>>> =
+        (0..windows.len()).map(|_| None).collect();
+    let mut rows = vec![0u64; windows.len()];
+    let mut current = 0usize;
+    let mut last_index: Option<u64> = None;
+
+    for line in reader.lines() {
+        let line = line.with_context(|| format!("reading {}", stream_path.display()))?;
+        if line.starts_with('#') {
+            stream_header.push(line);
+            continue;
+        }
+        if line.starts_with("t_s") {
+            columns = line;
+            continue;
+        }
+        let Some(t) = line.split(',').next().and_then(|t| t.parse::<f64>().ok()) else {
+            continue;
+        };
+        if t < 0.0 {
+            continue;
+        }
+        let index = (t * fs).round() as u64;
+        if last_index.is_some_and(|last| index < last) {
+            // The stream restarted: whatever was taken so far was a leftover.
+            files.iter_mut().for_each(|f| *f = None);
+            rows.iter_mut().for_each(|r| *r = 0);
+            current = 0;
+        }
+        last_index = Some(index);
+        while current < windows.len() && index >= windows[current].1 {
+            current += 1;
+        }
+        let Some(&(start, _)) = windows.get(current) else {
+            continue;
+        };
+        if index < start {
+            continue;
+        }
+        if files[current].is_none() {
+            let path = path_of(current);
+            let mut f = BufWriter::new(
+                std::fs::File::create(&path)
+                    .with_context(|| format!("creating {}", path.display()))?,
+            );
+            let p = &result.points[current];
+            writeln!(f, "# plant-trace Bode point — the samples its fit used")?;
+            writeln!(f, "# plan = {}", result.plan.name)?;
+            writeln!(
+                f,
+                "# input = {} (sense), response = {}",
+                result.plan.excite.name(),
+                result.plan.response.name()
+            )?;
+            writeln!(f, "# point = {}", p.index)?;
+            writeln!(f, "# freq_hz = {}", p.freq_hz)?;
+            writeln!(f, "# gain = {}", p.gain)?;
+            writeln!(f, "# gain_db = {}", p.gain_db)?;
+            writeln!(f, "# phase_deg = {}", p.phase_deg)?;
+            writeln!(f, "# raw_phase_deg = {}", p.raw_phase_deg)?;
+            writeln!(
+                f,
+                "# input fit = {} V ± {} V, residual {}",
+                p.input_offset_v, p.input_amplitude_v, p.input_residual
+            )?;
+            writeln!(
+                f,
+                "# response fit = {} V ± {} V, residual {}",
+                p.response_offset_v, p.response_amplitude_v, p.response_residual
+            )?;
+            writeln!(f, "# cycles = {}", p.cycles)?;
+            writeln!(f, "# first_sample = {}", p.first_sample)?;
+            writeln!(f, "# samples = {}", p.samples)?;
+            writeln!(f, "# from stream.csv, whose header was:")?;
+            for h in &stream_header {
+                writeln!(f, "#   {}", h.trim_start_matches('#').trim_start())?;
+            }
+            writeln!(f, "t_window_s,{columns}")?;
+            files[current] = Some(f);
+        }
+        let f = files[current].as_mut().expect("opened above");
+        writeln!(f, "{:.6},{line}", (index - start) as f64 / fs)?;
+        rows[current] += 1;
+    }
+
+    let mut short = Vec::new();
+    let mut written = 0;
+    for (i, f) in files.iter_mut().enumerate() {
+        if let Some(f) = f {
+            f.flush()?;
+            written += 1;
+        }
+        if rows[i] < windows[i].1 - windows[i].0 {
+            short.push(result.points[i].index);
+        }
+    }
+    Ok(PointsExport {
+        dir: out_dir,
+        files: written,
+        rows: rows.iter().sum(),
+        short,
+    })
 }
 
 /// The moving parts of a sweep, so the loops above can share one "next
@@ -1182,6 +1417,70 @@ mod tests {
     use std::f64::consts::PI;
 
     use super::*;
+
+    #[test]
+    fn bands_merge_into_one_list_dense_where_asked() {
+        let bands = [
+            Band {
+                from_hz: 0.005,
+                to_hz: 0.1,
+                per_decade: 8.0,
+            },
+            Band {
+                from_hz: 0.1,
+                to_hz: 1.0,
+                per_decade: 30.0,
+            },
+            Band {
+                from_hz: 1.0,
+                to_hz: 12.0,
+                per_decade: 10.0,
+            },
+        ];
+        let f = from_bands(&bands);
+        // 12 + 31 + 12 points, the two shared edges counted once.
+        assert_eq!(f.len(), 53, "{f:?}");
+        assert_eq!((f[0], *f.last().unwrap()), (0.005, 12.0));
+        assert!(f.windows(2).all(|w| w[0] < w[1]), "not ascending: {f:?}");
+        assert_eq!(f.iter().filter(|&&x| x == 0.1 || x == 1.0).count(), 2);
+        let in_decade = |lo: f64, hi: f64| f.iter().filter(|&&x| x >= lo && x < hi).count();
+        assert_eq!(in_decade(0.1, 1.0), 30);
+        assert!(in_decade(0.01, 0.1) <= 9);
+        // Rounded to 4 significant figures, so the file reads cleanly.
+        assert!(
+            f.iter()
+                .all(|x| format!("{x}").trim_start_matches("0.").len() <= 6),
+            "{f:?}"
+        );
+        // Overlapping bands do not double a point.
+        let twice = from_bands(&[bands[1], bands[1]]);
+        assert_eq!(twice, from_bands(&bands[1..2]));
+    }
+
+    #[test]
+    fn a_plan_keeps_its_bands_through_a_file() {
+        let bands = vec![
+            Band {
+                from_hz: 0.01,
+                to_hz: 0.1,
+                per_decade: 5.0,
+            },
+            Band {
+                from_hz: 0.1,
+                to_hz: 1.0,
+                per_decade: 20.0,
+            },
+        ];
+        let plan = BodePlan {
+            frequencies_hz: from_bands(&bands),
+            bands,
+            ..BodePlan::default()
+        };
+        let back: BodePlan = toml::from_str(&plan.to_toml().unwrap()).unwrap();
+        assert_eq!(back, plan);
+        // A plan without bands writes no [[bands]] at all.
+        assert!(!BodePlan::default().to_toml().unwrap().contains("bands"));
+    }
 
     #[test]
     fn log_space_hits_both_ends_and_is_geometric() {
