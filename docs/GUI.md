@@ -26,10 +26,10 @@ path from the sibling checkout while the two evolve together.
 
 | tab | what it does | the command-line equivalent |
 | --- | --- | --- |
-| **Monitor** | live view of `u_T`, `p_s` and `P_e`; hold either output at a level by hand, inside its window (2.25-2.75 V on `u_T`, 0-1 V on `p_s`); mean and peak-to-peak of the last 100 ms; an input divider ratio per channel, if one is ever put in front of a pin | `record`, `gen level`, `gen park` |
+| **Monitor** | live view of `u_T`, `p_s` and `P_e`; hold either output at a level by hand, inside its window (2.25-2.75 V on `u_T`, 0-1 V on `p_s`); mean and peak-to-peak of the last 100 ms; the input gain and full scale of each channel, from `calibration.toml` | `record`, `gen level`, `gen park` |
 | **Output check** | a free-running sine generator on either output or both (offset, amplitude, frequency; started on the same tick, stopped back onto its centre line) with the live view under it; the DC sweep and the sine readback of `docs/EXPERIMENTS.md` §2, with the fitted line, its residuals and the plateau ripple drawn | `gen` + `record`, `check dc`, `check sine` |
 | **Scenarios** | the experiment files as forms: steps, waveforms, output calibration; a preview of what the outputs will be commanded to do; run with the data drawn live | edit `experiments/*.toml`, `run` |
-| **Bode** | edit a `bode-*.toml` plan — excitation, response channel, settle/measure cycles, the frequencies (generated log/linear, plus single points) — run the stepped-sine sweep, watch the diagram grow | `bode` |
+| **Bode** | edit a `bode-*.toml` plan — excitation, response channel, settle/measure cycles, the frequencies (bands of the log axis, each with its own points per decade, plus single points) — run the stepped-sine sweep, watch the diagram grow | `bode` |
 | **Results** | open a run under `data/`, look at each recorded segment, run the analysis and see its tables | `analyze` |
 
 The live view pauses while a job holds the link — every job starts and stops
@@ -61,6 +61,16 @@ is steady.
 
 ## The Bode sweep
 
+**Frequencies by band.** The list is built from bands of the log axis, each
+`from → to` at its own number of points per decade: sparse where the response
+is flat, dense where it bends (`bode-u` runs 0.005-0.1 Hz at 8, 0.1-1 Hz at
+30 around the plant's lightly damped mode, 1-12 Hz at 10). Each row shows its
+point count and how long it takes; a strip plots every band's points at the
+height of its density over the plan's actual list, so gaps and crowding show
+at a glance. **Use these bands** writes the list (shared edges once, values to
+4 significant figures) and records the bands in the plan as `[[bands]]`;
+single points can still be added or removed afterwards.
+
 Frequencies above the plan's `max_freq_hz` — 15 Hz, the limit the plant is
 tested to — are refused before anything is driven; the form says so. Only the
 wire-loopback plan raises it.
@@ -82,8 +92,12 @@ sweep reports is a measurement of the real spacing.
 
 **Where the results go.** Every sweep — finished or cancelled — writes
 `data/<plan>-<UTC time>/` with `bode.csv` (the table), `bode.json` (the same
-result, complete) and `stream.csv` (every raw sample). The run bar shows the
-directory once the sweep ends. *Saved sweep* lists every `data/*/bode.json`,
+result, complete), `stream.csv` (every raw sample) and `points/`: one
+`NNN-<f>Hz.csv` per point holding exactly the samples its fit used — all
+three channels in counts and volts, the time inside the window first, the
+point's fit in the header. The run bar shows the directory once the sweep
+ends. **Export point samples** (or `plant-trace bode-points <dir>`) cuts
+`points/` out of an older sweep's `stream.csv`. *Saved sweep* lists every `data/*/bode.json`,
 newest first; **Open** redraws that sweep's diagram, table and delay fit
 (following its own plan's response channel and frequency range), and **Use
 its plan** copies that plan into the form so it can be run again.
