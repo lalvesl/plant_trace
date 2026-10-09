@@ -19,13 +19,20 @@ use super::{
     worker::Cmd,
 };
 use crate::{
-    bode::{self, BodePlan, BodePoint, BodeResult, ExcitedOutput, ResponseChannel},
+    bode::{self, Band, BodePlan, BodePoint, BodeResult, ExcitedOutput, ResponseChannel},
     experiment::nominal_scale,
 };
 
 const EXCITE: [&str; 2] = ["u_T (valve)", "p_s (steam pressure)"];
 const RESPONSE: [&str; 3] = ["u_T sense", "p_s sense", "P_e (plant output)"];
-const SPACING: [&str; 2] = ["logarithmic", "linear"];
+/// One colour per band in the frequency editor, cycled.
+const BAND_COLORS: [egui::Color32; 5] = [
+    egui::Color32::from_rgb(0x63, 0x66, 0xf1),
+    egui::Color32::from_rgb(0xec, 0x48, 0x99),
+    egui::Color32::from_rgb(0x14, 0xb8, 0xa6),
+    egui::Color32::from_rgb(0xf9, 0x73, 0x16),
+    egui::Color32::from_rgb(0x84, 0xcc, 0x16),
+];
 /// Height of each of the two Bode plots, points.
 const BODE_PLOT_HEIGHT: f32 = 460.0;
 
@@ -46,11 +53,10 @@ fn response_index(r: ResponseChannel) -> usize {
 
 pub(crate) struct BodeTab {
     plan: BodePlan,
-    /// Frequency generator: from, to, count, spacing.
-    gen_from: f64,
-    gen_to: f64,
-    gen_count: u32,
-    gen_spacing: usize,
+    /// The bands being edited — see [`bode::Band`]. Applied to the plan's
+    /// frequency list only on request, so single points added by hand
+    /// survive an edit until then.
+    bands: Vec<Band>,
     /// A frequency to add by hand.
     extra: f64,
     plan_path: PathBuf,
@@ -63,6 +69,9 @@ pub(crate) struct BodeTab {
     /// response channel, skew correction and frequency range) instead of the
     /// plan being edited, until the next run.
     shown: Option<BodePlan>,
+    /// A `points/` export running on its own thread (it reads the whole
+    /// `stream.csv`, hundreds of megabytes on a long sweep).
+    exporting: Option<std::sync::mpsc::Receiver<Result<bode::PointsExport, String>>>,
 
     running: bool,
     current: Option<(usize, f64)>,
@@ -78,23 +87,15 @@ impl BodeTab {
     pub(crate) fn new() -> Self {
         let plan_path = PathBuf::from("experiments/bode-u.toml");
         let plan = BodePlan::load(&plan_path).unwrap_or_default();
-        let lo = plan
-            .frequencies_hz
-            .iter()
-            .cloned()
-            .fold(f64::INFINITY, f64::min);
-        let hi = plan.frequencies_hz.iter().cloned().fold(0.0, f64::max);
         let mut tab = Self {
-            gen_from: if lo.is_finite() { lo } else { 0.05 },
-            gen_to: if hi > 0.0 { hi } else { 5.0 },
-            gen_count: plan.frequencies_hz.len().max(2) as u32,
-            gen_spacing: 0,
+            bands: bands_for(&plan),
             extra: 1.0,
             plan_path,
             plans: Vec::new(),
             sweeps: Vec::new(),
             sweep_sel: None,
             shown: None,
+            exporting: None,
             plan,
             running: false,
             current: None,
@@ -209,11 +210,16 @@ impl BodeTab {
                 self.spacing_us = o.implied_spacing_s.map(|d| d * 1e6);
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(e.clone()),
+            Err(e) => {
+                // A failed sweep still saves the points it measured.
+                self.rescan_sweeps();
+                self.last_error = Some(e.clone());
+            }
         }
     }
 
     pub(crate) fn show(&mut self, ui: &mut Ui, shared: &mut Shared) {
+        self.poll_export(ui.ctx());
         self.file_bar(ui);
         Spacing::Sm.show(ui);
         two(
@@ -248,6 +254,7 @@ impl BodeTab {
                     let path = self.plans[i].clone();
                     match BodePlan::load(&path) {
                         Ok(plan) => {
+                            self.bands = bands_for(&plan);
                             self.plan = plan;
                             self.plan_path = path;
                         }
@@ -305,7 +312,7 @@ impl BodeTab {
                 .show(ui)
                 .clicked()
             {
-                if let Some(dir) = picked {
+                if let Some(dir) = picked.clone() {
                     self.open_sweep(ui.ctx(), dir);
                 }
             }
@@ -317,6 +324,19 @@ impl BodeTab {
             {
                 self.rescan_sweeps();
             }
+            if self.exporting.is_some() {
+                Badge::new("exporting…").show(ui);
+            } else if Button::new("Export point samples")
+                .variant(ButtonVariant::Outline)
+                .size(ButtonSize::Sm)
+                .enabled(picked.is_some())
+                .show(ui)
+                .clicked()
+            {
+                if let Some(dir) = picked {
+                    self.export(ui.ctx(), dir);
+                }
+            }
             if let Some(plan) = &self.shown {
                 if Button::new("Use its plan")
                     .variant(ButtonVariant::Outline)
@@ -326,13 +346,61 @@ impl BodeTab {
                     .clicked()
                 {
                     self.plan = plan.clone();
+                    self.bands = bands_for(plan);
                 }
             }
             muted_text(
                 ui,
-                "every sweep is saved to data/<plan>-<time>/ (bode.csv, bode.json)",
+                "every sweep is saved to data/<plan>-<time>/: bode.csv, bode.json, stream.csv, \
+                 and points/ — the samples each point was fitted on",
             );
         });
+    }
+
+    /// Cut `dir`'s `points/` out of its `stream.csv`, off the UI thread.
+    fn export(&mut self, ctx: &egui::Context, dir: PathBuf) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(bode::export_points(&dir).map_err(|e| format!("{e:#}")));
+            ctx.request_repaint();
+        });
+        self.exporting = Some(rx);
+    }
+
+    fn poll_export(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.exporting else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(e)) => {
+                let short = if e.short.is_empty() {
+                    String::new()
+                } else {
+                    format!("; short windows at points {:?}", e.short)
+                };
+                Toaster::push_with_desc(
+                    ctx,
+                    "Point samples exported",
+                    format!(
+                        "{} files, {} rows — {}{short}",
+                        e.files,
+                        e.rows,
+                        e.dir.display()
+                    ),
+                    ToastVariant::Success,
+                );
+                self.exporting = None;
+            }
+            Ok(Err(e)) => {
+                Toaster::push_with_desc(ctx, "Export failed", e, ToastVariant::Destructive);
+                self.exporting = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.exporting = None,
+        }
     }
 
     fn save(&mut self, ctx: &egui::Context, path: PathBuf) {
@@ -394,7 +462,7 @@ impl BodeTab {
                 num_f64(ui, "Settle per frequency", &mut p.settle_cycles, 0.0..=50.0, 0.1, " cycles");
                 num_f64(ui, "  at least", &mut p.settle_min_s, 0.0..=600.0, 0.5, " s");
                 num_f64(ui, "  at most", &mut p.settle_max_s, 0.0..=3600.0, 1.0, " s");
-                num_f64(ui, "Measure per frequency", &mut p.measure_cycles, 1.0..=200.0, 0.5, " cycles");
+                num_f64(ui, "Measure per frequency", &mut p.measure_cycles, 1.0..=10_000.0, 0.5, " cycles");
                 num_f64(ui, "  at least", &mut p.measure_min_s, 0.0..=600.0, 0.5, " s");
                 num_f64(ui, "  at most", &mut p.measure_max_s, 0.0..=3600.0, 1.0, " s");
                 num_u32(ui, "Sample rate", &mut p.fs_hz, 10..=2000, " Hz");
@@ -427,33 +495,18 @@ impl BodeTab {
         section(
             ui,
             "Frequencies",
-            Some("Generate a sweep, then add or remove single points."),
+            Some("Bands of the log axis, each with its own density — sparse where the response is flat, dense where it bends. Use them, then add or remove single points."),
             |ui| {
-                num_f64(ui, "From", &mut self.gen_from, 0.001..=500.0, 0.01, " Hz");
-                num_f64(ui, "To", &mut self.gen_to, 0.001..=500.0, 0.01, " Hz");
-                num_u32(ui, "Points", &mut self.gen_count, 1..=200, "");
-                choose(ui, "Spacing", &mut self.gen_spacing, &SPACING);
+                self.band_editor(ui);
+                Spacing::Sm.show(ui);
                 ui.horizontal(|ui| {
-                    if Button::new("Generate")
-                        .variant(ButtonVariant::Secondary)
-                        .size(ButtonSize::Sm)
-                        .show(ui)
-                        .clicked()
-                    {
-                        self.plan.frequencies_hz = generate(
-                            self.gen_from,
-                            self.gen_to,
-                            self.gen_count as usize,
-                            self.gen_spacing == 0,
-                        );
-                    }
                     NumberInput::new("bode_extra_freq", &mut self.extra)
                         .range(0.001..=500.0)
                         .step(0.1)
                         .unit("Hz")
                         .width(100.0)
                         .show(ui);
-                    if Button::new("Add")
+                    if Button::new("Add point")
                         .variant(ButtonVariant::Outline)
                         .size(ButtonSize::Sm)
                         .show(ui)
@@ -485,7 +538,7 @@ impl BodeTab {
                 muted_text(
                     ui,
                     &format!(
-                        "{} frequencies · about {}",
+                        "{} frequencies in the plan · about {}",
                         self.plan.frequencies_hz.len(),
                         fmt_duration(self.plan.estimated_duration().as_secs_f64()),
                     ),
@@ -496,6 +549,166 @@ impl BodeTab {
                         .variant(AlertVariant::Destructive)
                         .show(ui);
                 }
+            },
+        );
+    }
+
+    /// The bands, one row each, and a strip showing where their points fall
+    /// and how dense they are.
+    fn band_editor(&mut self, ui: &mut Ui) {
+        // What one stretch of points costs, settling and measuring included.
+        let template = BodePlan {
+            initial_settle_s: 0.0,
+            ..self.plan.clone()
+        };
+        let initial_settle_s = self.plan.initial_settle_s;
+        let cost = |freqs: Vec<f64>| {
+            BodePlan {
+                frequencies_hz: freqs,
+                ..template.clone()
+            }
+            .estimated_duration()
+            .as_secs_f64()
+        };
+        let mut remove = None;
+        let n_bands = self.bands.len();
+        for (i, band) in self.bands.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                field_row(ui);
+                swatch(ui, BAND_COLORS[i % BAND_COLORS.len()]);
+                NumberInput::new(("bode_band_from", i), &mut band.from_hz)
+                    .range(0.001..=500.0)
+                    .step(0.01)
+                    .unit("Hz")
+                    .width(95.0)
+                    .show(ui);
+                muted_text(ui, "to");
+                NumberInput::new(("bode_band_to", i), &mut band.to_hz)
+                    .range(0.001..=500.0)
+                    .step(0.01)
+                    .unit("Hz")
+                    .width(95.0)
+                    .show(ui);
+                NumberInput::new(("bode_band_density", i), &mut band.per_decade)
+                    .range(1.0..=10_000.0)
+                    .step(1.0)
+                    .decimals(0)
+                    .unit("/dec")
+                    .width(85.0)
+                    .show(ui);
+                let freqs = band.frequencies();
+                small_text(
+                    ui,
+                    &format!("{} pts · {}", freqs.len(), fmt_duration(cost(freqs))),
+                );
+                if n_bands > 1
+                    && Button::new("×")
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .show(ui)
+                        .on_hover_text("remove this band")
+                        .clicked()
+                {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.bands.remove(i);
+        }
+
+        let generated = bode::from_bands(&self.bands);
+        let applied = generated == self.plan.frequencies_hz;
+        ui.horizontal(|ui| {
+            field_row(ui);
+            if Button::new("+ Band")
+                .variant(ButtonVariant::Outline)
+                .size(ButtonSize::Sm)
+                .show(ui)
+                .clicked()
+            {
+                let from = self.bands.last().map_or(0.1, |b| b.to_hz.max(b.from_hz));
+                self.bands.push(Band {
+                    from_hz: from,
+                    to_hz: (from * 10.0).min(self.plan.max_freq_hz.max(from)),
+                    per_decade: 10.0,
+                });
+            }
+            if Button::new("Use these bands")
+                .variant(ButtonVariant::Secondary)
+                .size(ButtonSize::Sm)
+                .enabled(!generated.is_empty() && !applied)
+                .show(ui)
+                .clicked()
+            {
+                self.plan.frequencies_hz = generated.clone();
+                self.plan.bands = self.bands.clone();
+            }
+            let summary = format!(
+                "= {} points · about {}",
+                generated.len(),
+                fmt_duration(cost(generated.clone()) + initial_settle_s)
+            );
+            if applied {
+                small_text(ui, &format!("{summary} · in the plan"));
+            } else {
+                Badge::new("not applied").show(ui);
+                small_text(ui, &summary);
+            }
+        });
+
+        // Density strip: each band's points at the height of its density, the
+        // plan's own list underneath — gaps and crowding show at a glance.
+        let lo = generated
+            .iter()
+            .chain(&self.plan.frequencies_hz)
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let hi = generated
+            .iter()
+            .chain(&self.plan.frequencies_hz)
+            .cloned()
+            .fold(0.0, f64::max);
+        let top = self.bands.iter().map(|b| b.per_decade).fold(1.0, f64::max);
+        let mut lines: Vec<Line> = self
+            .bands
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let pts: Vec<[f64; 2]> = b
+                    .frequencies()
+                    .into_iter()
+                    .map(|f| [f, b.per_decade])
+                    .collect();
+                Line::new(
+                    format!("{}–{}", fmt_hz(b.from_hz), fmt_hz(b.to_hz)),
+                    Arc::new(pts),
+                    BAND_COLORS[i % BAND_COLORS.len()],
+                )
+                .markers()
+            })
+            .collect();
+        lines.push(
+            Line::new(
+                "in the plan",
+                Arc::new(self.plan.frequencies_hz.iter().map(|&f| [f, 0.0]).collect()),
+                plot::reference_color(),
+            )
+            .markers(),
+        );
+        let x = AxisSpec::log("f [Hz]");
+        plot::show(
+            ui,
+            Plot {
+                id: "bode_density",
+                x: if lo.is_finite() && hi > lo {
+                    x.range(lo / 1.3, hi * 1.3)
+                } else {
+                    x
+                },
+                y: AxisSpec::linear("points / decade").range(-0.1 * top, 1.2 * top),
+                lines,
+                height: 150.0,
             },
         );
     }
@@ -535,7 +748,7 @@ impl BodeTab {
             if let Some(s) = self.spacing_us {
                 small_text(
                     ui,
-                    &format!("→ {s:.1} µs per channel, if the plant is a wire"),
+                    &format!("= {s:.1} µs per channel, if the plant is a wire"),
                 );
             }
             if let Some(dir) = &self.last_dir {
@@ -696,26 +909,45 @@ fn point_table(ui: &mut Ui, points: &[BodePoint]) {
         });
 }
 
-/// `n` frequencies from `f0` to `f1`, log or linear, rounded to four
-/// significant figures so the table reads well.
-pub(crate) fn generate(f0: f64, f1: f64, n: usize, log: bool) -> Vec<f64> {
-    let (a, b) = if f0 <= f1 { (f0, f1) } else { (f1, f0) };
-    if n <= 1 || a <= 0.0 {
-        return vec![a.max(1e-3)];
+/// Make a row of [`NumberInput`]s line up. Each one lays its field and unit
+/// out in a row of its own, centred on the row height egui assumes
+/// (`interact_size.y`, ~20 px) rather than on the 36 px field, so side by side
+/// they step downwards; giving the row the field's height centres them all on
+/// the same line.
+fn field_row(ui: &mut Ui) {
+    ui.spacing_mut().interact_size.y = 36.0;
+}
+
+/// A small filled circle in `color`, the band's key in the density strip.
+/// Painted rather than typed: the UI font has no "●".
+fn swatch(ui: &mut Ui, color: egui::Color32) {
+    let height = ui.spacing().interact_size.y;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, height), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 5.0, color);
+}
+
+/// The bands a plan was generated from, or — for a plan written as a plain
+/// list — one band over its whole range at the density the list has.
+fn bands_for(plan: &BodePlan) -> Vec<Band> {
+    if !plan.bands.is_empty() {
+        return plan.bands.clone();
     }
-    let raw = if log {
-        bode::log_space(a, b, n)
-    } else {
-        (0..n)
-            .map(|i| a + (b - a) * i as f64 / (n - 1) as f64)
-            .collect()
-    };
-    raw.into_iter()
-        .map(|f| {
-            let mag = 10f64.powf(f.log10().floor() - 3.0);
-            (f / mag).round() * mag
-        })
-        .collect()
+    let f = &plan.frequencies_hz;
+    let lo = f.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = f.iter().cloned().fold(0.0, f64::max);
+    if !(lo.is_finite() && hi > lo) {
+        return vec![Band {
+            from_hz: 0.01,
+            to_hz: 10.0,
+            per_decade: 10.0,
+        }];
+    }
+    let per_decade = ((f.len() - 1) as f64 / (hi / lo).log10()).round().max(1.0);
+    vec![Band {
+        from_hz: bode::round_sig4(lo),
+        to_hz: bode::round_sig4(hi),
+        per_decade,
+    }]
 }
 
 fn fmt_hz(f: f64) -> String {
@@ -741,11 +973,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_log_sweep_hits_both_ends_and_is_evenly_spaced_in_log() {
-        let f = generate(0.01, 10.0, 4, true);
-        assert_eq!(f, vec![0.01, 0.1, 1.0, 10.0]);
-        let g = generate(5.0, 1.0, 5, false);
-        assert_eq!(g, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    fn a_plain_list_opens_as_one_band_of_its_own_density() {
+        let plan = BodePlan {
+            frequencies_hz: bode::per_decade(0.01, 10.0, 5.0),
+            ..BodePlan::default()
+        };
+        let bands = bands_for(&plan);
+        assert_eq!(
+            bands,
+            vec![Band {
+                from_hz: 0.01,
+                to_hz: 10.0,
+                per_decade: 5.0
+            }]
+        );
+        // And regenerating it gives the same list back.
+        assert_eq!(bode::from_bands(&bands).len(), plan.frequencies_hz.len());
     }
 
     #[test]
@@ -755,7 +998,16 @@ mod tests {
             let path = entry.unwrap().path();
             let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
             if stem.starts_with("bode") {
-                BodePlan::load(&path).unwrap().validate().unwrap();
+                let plan = BodePlan::load(&path).unwrap();
+                plan.validate().unwrap();
+                // A plan that records its bands runs every point they make
+                // (and may add single points of its own).
+                for f in bode::from_bands(&plan.bands) {
+                    assert!(
+                        plan.frequencies_hz.contains(&f),
+                        "{stem}: {f} Hz is in its bands but not in its list"
+                    );
+                }
             }
         }
     }
