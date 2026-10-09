@@ -113,6 +113,12 @@ impl RunWriter {
         writeln!(out, "# adc_offset_counts = {}", meta.adc.offset_counts)?;
         writeln!(out, "# adc_gain_correction = {}", meta.adc.gain_correction)?;
         writeln!(out, "# volts_per_count = {:e}", meta.adc.volts_per_count())?;
+        let gains: Vec<String> = meta.adc.input_gain.iter().map(|g| g.to_string()).collect();
+        writeln!(
+            out,
+            "# input_gain = {}  (plant V per pin V: u_t, p_s, p_e; applied to the _v columns)",
+            gains.join(", ")
+        )?;
         if let Some(note) = &meta.note {
             writeln!(out, "# note = {note}")?;
         }
@@ -174,7 +180,7 @@ impl RunWriter {
                 write!(self.out, ",{}", counts[i * channels + c])?;
             }
             for c in 0..channels {
-                let v = self.adc.to_volts(counts[i * channels + c]);
+                let v = self.adc.to_volts(c, counts[i * channels + c]);
                 let a = &mut self.acc[c];
                 a.min = a.min.min(v);
                 a.max = a.max.max(v);
