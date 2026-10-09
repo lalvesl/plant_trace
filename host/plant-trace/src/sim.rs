@@ -114,7 +114,8 @@ pub struct Options {
     pub speed: f32,
     /// Plant parameters.
     pub params: PlantParams,
-    /// ADC scaling used to turn volts into counts.
+    /// ADC scaling used to turn volts into counts; its `input_gain` is the
+    /// divider the simulated rig has in front of each input.
     pub adc: AdcScale,
     /// Output scaling applied to the generator outputs, in wire order — the
     /// maps the firmware boots with unless a test says otherwise.
@@ -739,9 +740,9 @@ fn serve(stream: TcpStream, opts: &Options, stop: &AtomicBool) -> Result<()> {
                 }
             };
 
-            counts[i * N_CHANNELS] = to_counts(u_now, &opts.adc);
-            counts[i * N_CHANNELS + 1] = to_counts(p_late, &opts.adc);
-            counts[i * N_CHANNELS + 2] = to_counts(p_e_late, &opts.adc);
+            counts[i * N_CHANNELS] = to_counts(0, u_now, &opts.adc);
+            counts[i * N_CHANNELS + 1] = to_counts(1, p_late, &opts.adc);
+            counts[i * N_CHANNELS + 2] = to_counts(2, p_e_late, &opts.adc);
             sample_n += 1;
             gen.sim_t = t_next;
         }
@@ -782,11 +783,12 @@ fn wire_source(from: u8) -> usize {
     (from as usize).min(N_OUTPUTS - 1)
 }
 
-/// Volts → counts, with the ADC's saturation. Anything above full scale reads
-/// as full scale, exactly as the SAADC would.
-fn to_counts(volts: f32, adc: &AdcScale) -> i16 {
+/// Plant volts on channel `ch` → counts, through that channel's divider
+/// ([`AdcScale::input_gain`]) and with the ADC's saturation. Anything above
+/// full scale reads as full scale, exactly as the SAADC would.
+fn to_counts(ch: usize, volts: f32, adc: &AdcScale) -> i16 {
     let full = (1i32 << adc.bits) - 1;
-    let raw = (volts / adc.volts_per_count()).round() as i32;
+    let raw = (volts / adc.input_gain(ch) / adc.volts_per_count()).round() as i32;
     raw.clamp(0, full) as i16
 }
 
