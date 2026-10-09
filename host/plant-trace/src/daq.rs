@@ -12,6 +12,7 @@
 
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -24,7 +25,10 @@ use plant_trace_proto::{
     waveform::Waveform,
 };
 
-use crate::link::Framed;
+use crate::{
+    calibration::{Calibration, FrontEnd},
+    link::Framed,
+};
 
 /// How long to wait for a reply to a command before giving up.
 pub const REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -52,17 +56,21 @@ pub struct Info {
     pub block_samples: u16,
     /// Highest rate the firmware accepts.
     pub max_fs_hz: u32,
+    /// The dividers in front of the inputs and the ADC's own error: not the
+    /// firmware's to know, so [`Daq::info`] fills it in from the bench
+    /// calibration.
+    pub front_end: FrontEnd,
 }
 
 impl Info {
-    /// The counts→volts conversion this firmware implies, before any bench
-    /// calibration is applied.
+    /// The counts→volts conversion this firmware implies, with the bench
+    /// calibration ([`Self::front_end`]) folded in.
     pub fn adc_scale(&self) -> AdcScale {
-        AdcScale {
+        self.front_end.apply(AdcScale {
             full_scale_v: self.full_scale_mv as f32 / 1000.0,
             bits: self.bits,
             ..AdcScale::NOMINAL
-        }
+        })
     }
 }
 
@@ -143,6 +151,10 @@ pub struct Daq {
     /// Dropping them would punch a hole in the recording exactly where an
     /// excitation starts, which is the worst possible place for one.
     pending: VecDeque<Event>,
+    /// The bench calibration — see [`crate::calibration`].
+    front_end: FrontEnd,
+    /// The calibration file they came from, if any.
+    calibration: Option<PathBuf>,
 }
 
 impl Daq {
@@ -153,15 +165,38 @@ impl Daq {
     /// streaming and replies still in flight. Opening therefore stops the
     /// stream and throws away whatever arrives for a moment, so the first
     /// request of this session gets the first reply of this session.
+    ///
+    /// Also loads the bench calibration ([`Calibration::load_default`]); a
+    /// file that does not parse fails the open rather than quietly reading a
+    /// divided channel as undivided.
     pub fn open(spec: &str, baud: u32) -> Result<Self> {
+        let (calibration, path) = Calibration::load_default()?;
         let mut daq = Self {
             // A short read timeout keeps `next_event` responsive; the deadline
             // logic on top of it is what actually bounds the wait.
             framed: Framed::open(spec, baud, Duration::from_millis(50))?,
             pending: VecDeque::new(),
+            front_end: calibration.front_end()?,
+            calibration: path,
         };
         daq.flush()?;
         Ok(daq)
+    }
+
+    /// The bench calibration, as [`Self::info`] reports it.
+    pub fn front_end(&self) -> FrontEnd {
+        self.front_end
+    }
+
+    /// Replace the bench calibration for the rest of the session — a test
+    /// rig, or a caller with a calibration of its own.
+    pub fn set_front_end(&mut self, front_end: FrontEnd) {
+        self.front_end = front_end;
+    }
+
+    /// The calibration file in use, if there is one.
+    pub fn calibration_path(&self) -> Option<&std::path::Path> {
+        self.calibration.as_deref()
     }
 
     /// Stop any stream a previous session left running and discard everything
@@ -243,7 +278,10 @@ impl Daq {
         match self.request(HostToDaq::Info, REPLY_TIMEOUT, |e| {
             matches!(e, Event::Info(_))
         })? {
-            Event::Info(info) => Ok(info),
+            Event::Info(info) => Ok(Info {
+                front_end: self.front_end,
+                ..info
+            }),
             other => Err(anyhow!("expected device info, got {other:?}")),
         }
     }
@@ -380,6 +418,7 @@ fn own(msg: DaqToHost<'_>) -> Event {
             oversample: i.oversample,
             block_samples: i.block_samples,
             max_fs_hz: i.max_fs_hz,
+            front_end: FrontEnd::DIRECT,
         }),
         DaqToHost::Started { fs_hz } => Event::Started { fs_hz },
         DaqToHost::Stopped { blocks, dropped } => Event::Stopped { blocks, dropped },
