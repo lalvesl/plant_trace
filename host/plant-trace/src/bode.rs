@@ -70,6 +70,12 @@ use crate::{
 /// simulator's block length.
 const NOMINAL_BLOCK_SAMPLES: f64 = 64.0;
 
+/// Fewest periods a window is fitted over, whatever `measure_max_s` says.
+/// Over a single period the fit's drift term is far from orthogonal to the
+/// fundamental, so distortion and drift leak into the amplitude through it
+/// (+1.4 dB on the bench below 0.02 Hz); over two the leak is a tenth of that.
+pub const MIN_MEASURE_CYCLES: f64 = 2.0;
+
 // ── what to excite, what to measure ─────────────────────────────────────────
 
 /// The output a Bode plan drives with its sine.
@@ -298,8 +304,8 @@ pub struct BodePlan {
     /// periods and more noise…
     pub measure_min_s: f64,
     /// …and at most this long, seconds, except that a window is never less
-    /// than one whole period. This cap is what keeps a sweep down to 0.02 Hz
-    /// at minutes rather than an hour.
+    /// than [`MIN_MEASURE_CYCLES`] whole periods. This cap is what keeps a
+    /// sweep down to 0.02 Hz at minutes rather than an hour.
     pub measure_max_s: f64,
     /// Time between the conversions of consecutive channels in one scan,
     /// seconds — the skew the correction removes. Defaults to the nominal
@@ -501,9 +507,10 @@ impl BodePlan {
                 bail!("{name} must be zero or more, got {v}");
             }
         }
-        if !(self.measure_cycles.is_finite() && self.measure_cycles >= 1.0) {
+        if !(self.measure_cycles.is_finite() && self.measure_cycles >= MIN_MEASURE_CYCLES) {
             bail!(
-                "measure_cycles must be at least 1, got {}",
+                "measure_cycles must be at least {MIN_MEASURE_CYCLES}, got {} — over fewer \
+                 periods the fit's drift term reads distortion as gain",
                 self.measure_cycles
             );
         }
@@ -550,7 +557,7 @@ impl BodePlan {
                     .max(self.settle_min_s);
                 let wanted = self.measure_cycles.max(self.measure_min_s * f).ceil();
                 let cap = (self.measure_max_s * f).floor();
-                let measure_cycles = wanted.min(cap).max(1.0);
+                let measure_cycles = wanted.min(cap).max(MIN_MEASURE_CYCLES);
                 let measure_s = measure_cycles / f;
                 let cycles = ((settle_s + measure_s + 2.0 * margin) * f)
                     .ceil()
@@ -1519,7 +1526,7 @@ mod tests {
             d / 60.0
         );
         for p in plan.schedule() {
-            assert!(p.measure_cycles >= 1);
+            assert!(p.measure_cycles as f64 >= MIN_MEASURE_CYCLES);
             // The window fits inside the run, past the settle span, for any
             // start latency up to the margin.
             let m = plan.margin_s();
@@ -1595,6 +1602,45 @@ mod tests {
         assert!((p.raw_phase_deg - lead).abs() < 1e-6, "{p:?}");
         assert!(p.phase_deg.abs() < 1e-6, "{p:?}");
         assert!(p.gain_db.abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn a_window_is_never_shorter_than_two_periods() {
+        // The fit's drift term is far from orthogonal to the fundamental over
+        // a single period, so distortion leaks into the amplitude through it:
+        // the 2026-10-20 sweep read 1.4 dB high below 0.02 Hz, where the
+        // 100 s cap left one period. Two periods bring it down tenfold.
+        let gain_error_db = |periods: f64| {
+            let (f, fs) = (0.02, 100.0);
+            let t: Vec<f64> = (0..(periods / f * fs) as usize)
+                .map(|i| i as f64 / fs)
+                .collect();
+            let w = 2.0 * PI * f;
+            let y: Vec<f64> = t
+                .iter()
+                .map(|t| {
+                    (w * t).sin() + 0.3 * (2.0 * w * t + 0.7).sin() + 0.15 * (3.0 * w * t).cos()
+                })
+                .collect();
+            (20.0 * sine_fit(&t, &y, f).amplitude.log10()).abs()
+        };
+        assert!(gain_error_db(1.0) > 1.0, "{}", gain_error_db(1.0));
+        assert!(gain_error_db(2.0) < 0.25, "{}", gain_error_db(2.0));
+
+        let plan = BodePlan {
+            frequencies_hz: vec![0.005, 0.0199, 0.0207, 1.0],
+            ..BodePlan::default()
+        };
+        let cycles: Vec<u32> = plan.schedule().iter().map(|p| p.measure_cycles).collect();
+        // 100 s holds half a period at 0.005 Hz and 1.99 at 0.0199 Hz.
+        assert_eq!(cycles, [2, 2, 2, 10]);
+
+        let short = BodePlan {
+            measure_cycles: 1.0,
+            ..BodePlan::default()
+        };
+        let err = short.validate().unwrap_err().to_string();
+        assert!(err.contains("at least 2"), "{err}");
     }
 
     #[test]
