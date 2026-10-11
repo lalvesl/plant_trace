@@ -280,7 +280,10 @@ input (the sense channel of the excited output) and on the response. Settle
 and window lengths are given in periods and bounded in seconds
 (`settle_cycles`/`settle_min_s`/`settle_max_s`,
 `measure_cycles`/`measure_min_s`/`measure_max_s`), which is what keeps a sweep
-down to 0.02 Hz at minutes rather than an hour. Phase is negative when the
+down to 0.02 Hz at minutes rather than an hour. A window is never shorter than
+two periods, whatever `measure_max_s` says: the fit's drift term is far from
+orthogonal to the sine over a single period, and distortion leaks into the
+gain through it (+1.4 dB on the bench below 0.02 Hz). Phase is negative when the
 response lags, and is unwrapped along the sweep in the order the frequencies
 are listed.
 
