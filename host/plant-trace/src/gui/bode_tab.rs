@@ -462,7 +462,7 @@ impl BodeTab {
                 num_f64(ui, "Settle per frequency", &mut p.settle_cycles, 0.0..=50.0, 0.1, " cycles");
                 num_f64(ui, "  at least", &mut p.settle_min_s, 0.0..=600.0, 0.5, " s");
                 num_f64(ui, "  at most", &mut p.settle_max_s, 0.0..=3600.0, 1.0, " s");
-                num_f64(ui, "Measure per frequency", &mut p.measure_cycles, 1.0..=10_000.0, 0.5, " cycles");
+                num_f64(ui, "Measure per frequency", &mut p.measure_cycles, bode::MIN_MEASURE_CYCLES..=10_000.0, 0.5, " cycles");
                 num_f64(ui, "  at least", &mut p.measure_min_s, 0.0..=600.0, 0.5, " s");
                 num_f64(ui, "  at most", &mut p.measure_max_s, 0.0..=3600.0, 1.0, " s");
                 num_u32(ui, "Sample rate", &mut p.fs_hz, 10..=2000, " Hz");
